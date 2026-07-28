@@ -1,0 +1,55 @@
+#!/bin/sh
+# Обновление записи DuckDNS. Запускается launchd каждые 5 минут.
+#
+# Именно этот скрипт снимает потребность в статическом IP: провайдер меняет
+# адрес когда хочет, а DNS-имя догоняет его за пару минут. Пустой ip= означает
+# «возьми адрес, с которого пришёл запрос» — свой IP определять не нужно.
+#
+# Шаблон: setup.sh подставит поддомены и token.
+set -u
+
+DOMAIN="ВАШ-ПОДДОМЕН"
+LAN_DOMAIN="ДОМАШНИЙ-ПОДДОМЕН"   # пусто, если второго имени нет
+TOKEN="ВАШ-TOKEN"
+LOG="ЛОГ-ФАЙЛ"          # кавычки обязательны: в пути есть пробел
+
+RESP=$(curl -fsS --max-time 20 \
+	"https://www.duckdns.org/update?domains=${DOMAIN}&token=${TOKEN}&ip=" 2>&1)
+
+# duckdns отвечает ровно «OK» или «KO». Пишем в лог только проблемы и смену IP,
+# иначе файл распухнет на 288 строк в сутки ни о чём.
+if [ "$RESP" != "OK" ]; then
+	echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА: $RESP" >>"$LOG"
+	exit 1
+fi
+
+IP=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || echo "?")
+LAST_FILE="${LOG%.log}.last-ip"
+LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "")
+if [ "$IP" != "$LAST" ]; then
+	echo "$(date '+%Y-%m-%d %H:%M:%S') IP -> $IP" >>"$LOG"
+	printf '%s' "$IP" >"$LAST_FILE"
+fi
+
+# Домашнее имя показывает не в интернет, а на локальный адрес самого мака: из
+# своей же Wi-Fi сети внешнее имя не открывается, роутер не разворачивает запрос
+# к собственному внешнему адресу. Переставляем запись каждый раз — если
+# локальный адрес когда-нибудь сменится, домашнее имя догонит его само.
+[ -n "$LAN_DOMAIN" ] || exit 0
+
+IFACE=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+LAN_IP=$(ipconfig getifaddr "$IFACE" 2>/dev/null || echo "")
+[ -n "$LAN_IP" ] || exit 0
+
+RESP=$(curl -fsS --max-time 20 \
+	"https://www.duckdns.org/update?domains=${LAN_DOMAIN}&token=${TOKEN}&ip=${LAN_IP}" 2>&1)
+if [ "$RESP" != "OK" ]; then
+	echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА (домашнее имя): $RESP" >>"$LOG"
+	exit 1
+fi
+
+LAST_LAN_FILE="${LOG%.log}.last-lan-ip"
+if [ "$LAN_IP" != "$(cat "$LAST_LAN_FILE" 2>/dev/null || echo "")" ]; then
+	echo "$(date '+%Y-%m-%d %H:%M:%S') локальный IP -> $LAN_IP" >>"$LOG"
+	printf '%s' "$LAN_IP" >"$LAST_LAN_FILE"
+fi

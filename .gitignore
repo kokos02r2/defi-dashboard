@@ -12,3 +12,8 @@ data/
 # ключи деплоя и резервные копии лежат рядом с кодом, и git не должен их видеть
 .ssh/
 backups/
+
+# setup.sh генерирует их из *.template рядом, подставляя token DuckDNS
+# и локальные пути. В git попадать не должны — там секрет.
+deploy/mac/duckdns.sh
+deploy/mac/backup.sh

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Резервная копия базы, раз в сутки. В базе вся история, партии и настройки —
+# на блокчейне их нет, восстановить пересканированием не получится.
+#
+# .backup(), а не cp: копия согласована даже при активном WAL и работающем
+# приложении, останавливать его не нужно.
+#
+# Шаблон: setup.sh подставит пути.
+set -eu
+
+# кавычки обязательны: в пути к каталогу есть пробел
+APP_DIR="КАТАЛОГ-ПРИЛОЖЕНИЯ"
+export APP_DIR          # питоновский heredoc читает путь отсюда
+PY="$APP_DIR/.venv/bin/python"
+
+mkdir -p "$APP_DIR/backups"
+
+"$PY" - <<'EOF'
+import datetime, os, sqlite3
+app = os.environ["APP_DIR"]
+name = datetime.datetime.now().strftime("dashboard-%Y%m%d.sqlite3")
+src = sqlite3.connect(os.path.join(app, "data", "dashboard.sqlite3"))
+dst = sqlite3.connect(os.path.join(app, "backups", name))
+src.backup(dst)
+dst.close()
+src.close()
+print(name)
+EOF
+
+# держим две недели: этого хватает, чтобы заметить порчу данных и откатиться
+find "$APP_DIR/backups" -name 'dashboard-*.sqlite3' -mtime +14 -delete
