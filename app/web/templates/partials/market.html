@@ -1,0 +1,15 @@
+{# Тикер в шапке. Направление всегда со стрелкой: цвет сам по себе ничего не кодирует. #}
+{% if rates %}
+  {% for r in rates %}
+    <span class="rate">
+      <b>{{ r.symbol }}</b>
+      <span class="px">${{ '{:,.0f}'.format(r.price).replace(',', ' ') if r.price >= 100 else '%.2f' % r.price }}</span>
+      {% if r.change_24h is not none %}
+        <span class="chg {{ 'up' if r.change_24h > 0 else ('down' if r.change_24h < 0 else 'flat') }}"
+              title="Изменение за 24 часа">
+          {{ '▲' if r.change_24h > 0 else ('▼' if r.change_24h < 0 else '·') }}{{ '%.2f' % (r.change_24h | abs) }}%
+        </span>
+      {% endif %}
+    </span>
+  {% endfor %}
+{% endif %}

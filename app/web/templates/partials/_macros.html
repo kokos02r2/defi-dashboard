@@ -1,0 +1,71 @@
+{# Переиспользуемые кусочки. Каждый статус — значок + подпись: цвет сам по себе
+   ничего не кодирует, иначе дальтоник и печать теряют смысл. #}
+
+{% macro protocol_chip(p) %}
+  {% if p.protocol == 'uniswap_v3' %}
+    <span class="chip uni"><i></i>Uniswap V3</span>
+  {% else %}
+    <span class="chip fluid"><i></i>{{ p.protocol_title }}</span>
+  {% endif %}
+{% endmacro %}
+
+
+{% macro position_status(p) %}
+  {% if not p.is_open %}
+    <span class="status off">● закрыта</span>
+  {% elif p.protocol == 'uniswap_v3' %}
+    {% if p.in_range %}
+      <span class="status ok">✓ в диапазоне</span>
+    {% elif p.in_range is false %}
+      <span class="status warn">▲ вне диапазона</span>
+    {% else %}
+      <span class="status off">— нет данных</span>
+    {% endif %}
+  {% elif p.health_factor is not none %}
+    {{ health(p.health_factor) }}
+  {% else %}
+    <span class="status ok">✓ активна</span>
+  {% endif %}
+{% endmacro %}
+
+
+{% macro health(hf) %}
+  {% set cls = 'bad' if hf < 1.1 else ('warn' if hf < 1.35 else 'ok') %}
+  {% set icon = '✕' if hf < 1.1 else ('▲' if hf < 1.35 else '✓') %}
+  {# шкала до 2.5: выше этого запас прочности уже не различим на глаз #}
+  {% set w = ((hf / 2.5) * 100) | round(0, 'floor') %}
+  <span class="hf" title="Health factor — ликвидация при значении 1.0">
+    <span class="meter"><b class="{{ cls }}" style="width:{{ [w, 100] | min }}%"></b></span>
+    <span class="v status {{ cls }}">{{ icon }} {{ '%.2f' % hf }}</span>
+  </span>
+{% endmacro %}
+
+
+{% macro rangebar(p) %}
+  {% set r = (p.detail or {}).get('range') or {} %}
+  {% if r.get('position_pct') is not none %}
+    <div class="rangebar {{ 'out' if not p.in_range }}">
+      <div class="track">
+        <div class="fill"></div>
+        <div class="marker" style="left: calc({{ r.position_pct | round(1) }}% - 1px)"></div>
+      </div>
+      <div class="ends">
+        <span>{{ r.lower | price }}</span>
+        <span>{{ r.upper | price }}</span>
+      </div>
+    </div>
+  {% else %}
+    <span class="meta">—</span>
+  {% endif %}
+{% endmacro %}
+
+
+{% macro delta(v, pct=none) %}
+  {% if v is none %}
+    <span class="delta flat">н/д</span>
+  {% else %}
+    <span class="delta {{ 'up' if v > 0 else ('down' if v < 0 else 'flat') }}">
+      {{ '+' if v > 0 }}{{ v | usd }}{% if pct is not none %} ({{ pct | pct(1, true) }}){% endif %}
+    </span>
+  {% endif %}
+{% endmacro %}

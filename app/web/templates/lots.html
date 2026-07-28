@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Партии — DeFi Dashboard{% endblock %}
+{% set active = 'lots' %}
+
+{% block content %}
+<h1 class="page">Партии</h1>
+<div class="page-sub">
+  По какой средней цене на самом деле набран актив. В блокчейне этой цифры нет —
+  позиция просто распродала стейбл в ETH, и цену набора надо помнить самому.
+</div>
+
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if summary %}
+<div class="tiles">
+  {% for s in summary %}
+  <div class="tile">
+    <div class="label">{{ s.symbol }} · средняя цена</div>
+    <div class="value">${{ s.avg_price | usd_price }}</div>
+    <div class="sub">
+      {{ '%.6f' % s.amount }} {{ s.symbol }} на {{ s.cost | usd_short }}
+      {% if s.lots > 1 %}· {{ s.lots }} партии{% endif %}
+    </div>
+    {% if s.price_now %}
+    <div class="sub">
+      сейчас ${{ s.price_now | usd_price }} ·
+      <span class="{{ 'status ok' if s.pnl_pct > 0 else ('status bad' if s.pnl_pct < 0 else '') }}">
+        {{ '▲' if s.pnl_pct > 0 else ('▼' if s.pnl_pct < 0 else '·') }} {{ s.pnl_pct | abs | pct(1) }}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Добавить партию</h2>
+  <div class="body">
+    <form method="post" action="/lots/add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Актив</span>
+        <input type="text" name="symbol" list="symbols" style="width:110px" required
+               value="{{ prefill.symbol }}" placeholder="ETH">
+        <datalist id="symbols">{% for s in symbols %}<option value="{{ s }}">{% endfor %}</datalist>
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Количество</span>
+        <input type="text" name="amount" style="width:150px" required
+               value="{{ prefill.amount }}" placeholder="8.3009">
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Средняя цена, $</span>
+        <input type="text" name="price" style="width:150px" required
+               value="{{ prefill.price }}" placeholder="1850.42">
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Когда</span>
+        <input type="date" name="acquired" style="width:150px">
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Заметка</span>
+        <input type="text" name="note" style="width:100%" value="{{ prefill.note }}"
+               placeholder="вышла вниз позиция WETH/USDC 0.05%">
+      </label>
+      <input type="hidden" name="source" value="{{ prefill.source or '' }}">
+      <button class="btn primary" type="submit">＋ Добавить</button>
+    </form>
+    <div class="note">
+      Среднюю цену не нужно считать вручную: откройте позицию Uniswap, там есть блок
+      «Средняя цена набора» и ссылка, которая заполнит эту форму сама.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Партии</h2>
+  <div class="table-scroll">
+  {% if rows %}
+  <table class="positions">
+    <thead>
+      <tr>
+        <th>Актив</th><th>Когда</th><th>Заметка</th>
+        <th class="num">Количество</th><th class="num">Средняя цена</th>
+        <th class="num">Вложено</th><th class="num">Сейчас</th><th class="num">Разница</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="name">{{ r.lot.symbol }}</td>
+        <td class="meta">{{ r.lot.acquired_at | ts_short }}</td>
+        <td>
+          {{ r.lot.note or '—' }}
+          {% if r.lot.source_position_id %}
+            <a href="/position/{{ r.lot.source_position_id }}" class="meta">↗</a>
+          {% endif %}
+        </td>
+        <td class="num">{{ '%.6f' % r.lot.amount }}</td>
+        <td class="num">${{ r.lot.avg_price_usd | usd_price }}</td>
+        <td class="num">{{ r.cost | usd }}</td>
+        <td class="num">
+          {{ r.value_now | usd if r.value_now is not none else '—' }}
+          {% if r.price_now %}<div class="meta">${{ r.price_now | usd_price }}</div>{% endif %}
+        </td>
+        <td class="num">
+          {% if r.pnl is not none %}
+            <span class="{{ 'status ok' if r.pnl > 0 else ('status bad' if r.pnl < 0 else '') }}">
+              {{ '▲' if r.pnl > 0 else ('▼' if r.pnl < 0 else '·') }} {{ r.pnl | abs | usd }}
+            </span>
+            <div class="meta">{{ r.pnl_pct | pct(1, true) }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td style="text-align:right">
+          <form method="post" action="/lots/{{ r.lot.id }}/delete" style="display:inline"
+                onsubmit="return confirm('Убрать партию? Так помечают, что актив продан.')">
+            <button class="btn ghost danger" type="submit" title="Продано">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    Партий пока нет.<br>
+    Когда позиция выйдет вниз из диапазона и превратится в ETH — откройте её страницу
+    и запишите цену набора отсюда.
+  </div>
+  {% endif %}
+  </div>
+</div>
+{% endblock %}

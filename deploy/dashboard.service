@@ -1,0 +1,43 @@
+# systemd-юнит. Копируется в /etc/systemd/system/dashboard.service
+#
+# ВАЖНО: один процесс, без --workers.
+# Планировщик обновлений живёт внутри процесса приложения, а данные лежат в SQLite.
+# Два воркера означали бы два планировщика: каждый опрашивал бы блокчейн, писал бы
+# свои снапшоты и слал бы дубли уведомлений, а записи в базу конкурировали бы.
+
+[Unit]
+Description=DeFi Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dashboard
+Group=dashboard
+WorkingDirectory=/opt/dashboard
+
+# .env приложение читает само (python-dotenv), поэтому EnvironmentFile не нужен —
+# иначе systemd разбирал бы тот же файл по своим правилам и спорил с dotenv.
+#
+# --proxy-headers нужен, чтобы приложение видело реальный IP клиента, а не 127.0.0.1
+# от nginx: иначе ограничитель попыток входа считал бы все попытки за одного.
+ExecStart=/opt/dashboard/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8787 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dashboard
+
+[Install]
+WantedBy=multi-user.target

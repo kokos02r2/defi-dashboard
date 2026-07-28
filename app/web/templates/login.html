@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Вход — DeFi Dashboard{% endblock %}
+
+{% block content %}
+<div class="login-wrap">
+  <form class="login" method="post" action="/login">
+    <h1>DeFi Dashboard</h1>
+    <p class="hint">Личный кабинет по позициям Uniswap и Fluid</p>
+
+    <label for="u">Логин</label>
+    <input id="u" name="username" type="text" autocomplete="username" autofocus required>
+
+    <label for="p">Пароль</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+
+    <button class="btn primary" type="submit">Войти</button>
+
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  </form>
+</div>
+{% endblock %}

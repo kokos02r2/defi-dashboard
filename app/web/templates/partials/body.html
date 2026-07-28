@@ -1,0 +1,154 @@
+{% import "partials/_macros.html" as m %}
+
+{% if alerts %}
+<div class="alerts">
+  {% for a in alerts %}
+  <div class="alert {{ a.severity }}">
+    <span class="ic">{{ '✕' if a.severity == 'danger' else ('▲' if a.severity == 'warning' else 'ℹ') }}</span>
+    <span>{{ a.message }}</span>
+    <span class="when">{{ a.ts | ts_short }}</span>
+  </div>
+  {% endfor %}
+  <form method="post" action="/alerts/seen"><button class="btn ghost" type="submit">Пометить прочитанными</button></form>
+</div>
+{% endif %}
+
+{% if totals.vs.initial %}
+{# Чистая стоимость против заведённой суммы. Заклеймленное реинвестируется, поэтому
+   уже внутри неё и отдельно не прибавляется. Вторая плитка появляется только когда
+   есть временные доливки — без них обе цифры совпали бы и вторая была бы шумом.
+   Направление несёт стрелка, цвет только усиливает. #}
+<div class="tiles">
+  <div class="tile">
+    <div class="label">От входа{{ ' · без временных' if totals.vs.temp }}</div>
+    <div class="value {{ 'up' if totals.vs.delta > 0 else ('down' if totals.vs.delta < 0 else '') }}">
+      {{ '▲' if totals.vs.delta > 0 else ('▼' if totals.vs.delta < 0 else '·') }}
+      {{ totals.vs.pct | abs | pct(2) }}
+    </div>
+    <div class="sub">
+      {{ '+' if totals.vs.delta > 0 }}{{ totals.vs.delta | usd }}
+      · сейчас {{ totals.vs.current | usd_short }} из {{ totals.vs.initial | usd_short }}
+    </div>
+    {% if totals.vs.temp %}
+    <div class="sub">результат самих вложений, доливки вычтены</div>
+    {% endif %}
+  </div>
+
+  {% if totals.vs.temp %}
+  <div class="tile">
+    <div class="label">От входа · с временными</div>
+    <div class="value {{ 'up' if totals.vs.delta_gross > 0 else ('down' if totals.vs.delta_gross < 0 else '') }}">
+      {{ '▲' if totals.vs.delta_gross > 0 else ('▼' if totals.vs.delta_gross < 0 else '·') }}
+      {{ totals.vs.pct_gross | abs | pct(2) }}
+    </div>
+    <div class="sub">
+      {{ '+' if totals.vs.delta_gross > 0 }}{{ totals.vs.delta_gross | usd }}
+      · сейчас {{ totals.vs.gross | usd_short }} из {{ totals.vs.initial | usd_short }}
+    </div>
+    <div class="sub">весь портфель, включая {{ totals.vs.temp | usd_short }} доливок</div>
+  </div>
+  {% endif %}
+</div>
+{% elif wallet_id %}
+<div class="note" style="margin-bottom:16px">
+  Сравнение с исходным вложением задано на весь портфель — выберите
+  <a href="/?closed={{ 1 if show_closed else 0 }}">все кошельки</a>, чтобы увидеть его.
+</div>
+{% endif %}
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Чистая стоимость</div>
+    <div class="value">{{ totals.net | usd_short }}</div>
+    <div class="sub">
+      активы {{ totals.value | usd_short }}{% if totals.debt %} · долг {{ totals.debt | usd_short }}{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Несобранные комиссии</div>
+    <div class="value">{{ totals.fees_unclaimed | usd_short }}</div>
+    <div class="sub">
+      {% if totals.fees_claimed %}заклеймлено за всё время {{ totals.fees_claimed | usd_short }}{% else %}по активным позициям{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">PnL с комиссиями</div>
+    <div class="value sm">{{ m.delta(totals.pnl) }}</div>
+    <div class="sub">
+      {% if totals.net_invested %}своих денег в позициях {{ totals.net_invested | usd_short }}{% else %}нужна полная синхронизация{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Годовые по комиссиям</div>
+    <div class="value sm">{{ totals.apr | pct(2) if totals.apr is not none else 'н/д' }}</div>
+    <div class="sub">средневзвешенно по размеру позиций</div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Позиции</div>
+    <div class="value sm">{{ totals.open_count }}<span style="font-size:14px;color:var(--ink-muted)"> активных</span></div>
+    <div class="sub">
+      {% if totals.out_of_range %}<span class="status warn">▲ {{ totals.out_of_range }} вне диапазона</span>{% endif %}
+      {% if totals.at_risk %}<span class="status bad">✕ {{ totals.at_risk }} с риском</span>{% endif %}
+      {% if not totals.out_of_range and not totals.at_risk %}всё в порядке · закрытых {{ totals.closed_count }}{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Позиции</h2>
+  <div class="table-scroll">
+  {% if positions %}
+  <table class="positions">
+    <thead>
+      <tr>
+        <th>Позиция</th>
+        <th>Протокол</th>
+        <th>Сеть</th>
+        <th>Состояние</th>
+        <th>Диапазон / риск</th>
+        <th class="num">Стоимость</th>
+        <th class="num">Комиссии</th>
+        <th class="num">PnL</th>
+        <th class="num">APR</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in positions %}
+      <tr onclick="location.href='/position/{{ p.id }}'" style="cursor:pointer">
+        <td>
+          <div class="name"><a href="/position/{{ p.id }}">{{ p.title }}</a></div>
+          <div class="meta">{{ p.subtitle }}</div>
+        </td>
+        <td>{{ m.protocol_chip(p) }}</td>
+        <td class="meta">{{ p.chain }}</td>
+        <td>{{ m.position_status(p) }}</td>
+        <td>
+          {% if p.protocol == 'uniswap_v3' and p.is_open %}{{ m.rangebar(p) }}
+          {% elif p.ltv is not none %}<span class="meta">LTV {{ p.ltv | pct(1) }}</span>
+          {% else %}<span class="meta">—</span>{% endif %}
+        </td>
+        <td class="num">
+          {{ p.net_usd | usd }}
+          {% if p.debt_usd %}<div class="meta">долг {{ p.debt_usd | usd_short }}</div>{% endif %}
+        </td>
+        <td class="num">{{ p.fees_unclaimed_usd | usd if p.fees_unclaimed_usd is not none else '—' }}</td>
+        <td class="num">
+          {% if p.pnl_usd is not none %}{{ m.delta(p.pnl_usd, p.pnl_pct) }}{% else %}<span class="meta">—</span>{% endif %}
+        </td>
+        <td class="num">{{ p.apr | pct(1) if p.apr is not none else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    Позиций пока нет.<br>
+    Добавьте кошелёк на странице <a href="/wallets">Кошельки</a> — после этого запустится полная синхронизация.
+  </div>
+  {% endif %}
+  </div>
+</div>

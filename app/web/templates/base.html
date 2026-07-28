@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DeFi Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script>
+    // тема применяется до первой отрисовки, иначе моргает светлым
+    (function () {
+      var t = localStorage.getItem("theme");
+      if (t) document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+{% if user is defined and user %}
+<header class="top">
+  <span class="brand">DeFi Dashboard</span>
+  <nav>
+    <a href="/" class="{{ 'active' if active == 'dash' }}">Портфель</a>
+    <a href="/calc" class="{{ 'active' if active == 'calc' }}">Калькулятор</a>
+    <a href="/lots" class="{{ 'active' if active == 'lots' }}">Партии</a>
+    <a href="/wallets" class="{{ 'active' if active == 'wallets' }}">Кошельки</a>
+    <a href="/settings" class="{{ 'active' if active == 'settings' }}">Настройки</a>
+  </nav>
+
+  {# Тикер сам себя подгружает и обновляет — шапка не зависит от контекста страницы #}
+  <span class="ticker" hx-get="/partials/market" hx-trigger="load, every 60s"
+        hx-swap="innerHTML" aria-label="Курсы ETH и BTC"></span>
+
+  <span class="spacer"></span>
+  {% if status is defined and status %}
+    <span class="status-dot {{ 'busy' if status.running }}" title="Последнее обновление">
+      <i></i>
+      {% if status.running %}обновляется…
+      {% elif status.last_live %}{{ status.last_live.started_at[11:16] }} UTC
+      {% else %}нет данных{% endif %}
+    </span>
+  {% endif %}
+  <form method="post" action="/refresh" style="display:inline">
+    <input type="hidden" name="mode" value="live">
+    <button class="btn" type="submit">Обновить</button>
+  </form>
+  <form method="post" action="/refresh" style="display:inline">
+    <input type="hidden" name="mode" value="sync">
+    <button class="btn ghost" type="submit" title="Пересканировать историю и найти новые позиции">
+      Полная синхронизация
+    </button>
+  </form>
+  <button class="btn ghost" onclick="toggleTheme()" title="Светлая/тёмная тема" aria-label="Сменить тему">◐</button>
+  <a class="btn ghost" href="/logout">Выйти</a>
+</header>
+{% endif %}
+
+<div class="wrap">
+  {% block content %}{% endblock %}
+</div>
+
+<script>
+  function toggleTheme() {
+    var cur = document.documentElement.getAttribute("data-theme");
+    if (!cur) {
+      cur = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    var next = cur === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+    document.dispatchEvent(new CustomEvent("themechange"));
+  }
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

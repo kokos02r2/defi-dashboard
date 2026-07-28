@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Портфель — DeFi Dashboard{% endblock %}
+{% set active = 'dash' %}
+
+{% block content %}
+{# Один ряд фильтров над всем, что они задают: и график, и таблица читают тот же срез #}
+<div class="filters">
+  <form method="get" action="/">
+    <select name="wallet" onchange="this.form.submit()">
+      <option value="">Все кошельки</option>
+      {% for w in wallets %}
+        <option value="{{ w.id }}" {{ 'selected' if wallet_id == w.id }}>{{ w.title }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="closed" value="{{ 1 if show_closed else 0 }}">
+  </form>
+
+  <a class="btn ghost" href="/?{% if wallet_id %}wallet={{ wallet_id }}&amp;{% endif %}closed={{ 0 if show_closed else 1 }}">
+    {{ 'Скрыть закрытые' if show_closed else 'Показать закрытые' }}
+  </a>
+
+  <span class="spacer" style="flex:1"></span>
+
+  <div class="seg" role="group" aria-label="Период графика">
+    <button type="button" data-days="7" aria-pressed="false">7д</button>
+    <button type="button" data-days="30" aria-pressed="true">30д</button>
+    <button type="button" data-days="90" aria-pressed="false">90д</button>
+    <button type="button" data-days="1825" aria-pressed="false">всё</button>
+  </div>
+</div>
+
+<div class="card chart-card">
+  <div class="chart-head">
+    <h2>Капитал во времени</h2>
+    <span class="spacer"></span>
+    <span class="meta" id="chart-note" style="font-size:12.5px;color:var(--ink-muted)"></span>
+  </div>
+  <div class="legend" id="chart-legend" hidden>
+    <span><i style="background:var(--series-1)"></i>Чистая стоимость</span>
+    <span><i style="background:var(--series-2)"></i>Активы</span>
+    <span><i style="background:var(--series-3)"></i>Долг</span>
+  </div>
+  <div class="chart-box"><canvas id="equity"></canvas></div>
+  <div style="padding:0 16px 14px">
+    {# табличный двойник графика: значения доступны без наведения мыши #}
+    <details>
+      <summary style="cursor:pointer;font-size:12.5px;color:var(--ink-2)">Показать таблицей</summary>
+      <div class="table-scroll" style="max-height:260px;overflow-y:auto;margin-top:10px">
+        <table class="events" id="chart-table">
+          <thead><tr><th>Время</th><th class="num">Чистая</th><th class="num">Активы</th><th class="num">Долг</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div id="live"
+     hx-get="/partials/summary?{% if wallet_id %}wallet={{ wallet_id }}&amp;{% endif %}closed={{ 1 if show_closed else 0 }}"
+     hx-trigger="every 60s"
+     hx-swap="innerHTML">
+  {% include "partials/body.html" %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+const WALLET = {{ wallet_id or 'null' }};
+let chart = null, days = 30;
+
+async function loadChart() {
+  const url = "/api/chart?days=" + days + (WALLET ? "&wallet=" + WALLET : "");
+  const r = await fetch(url);
+  if (!r.ok) return;
+  const d = await r.json();
+  const n = d.labels.length;
+
+  document.getElementById("chart-note").textContent =
+    n ? ChartKit.pointsNote(n) : "Точек ещё нет — график появится после нескольких обновлений";
+
+  const hasDebt = d.debt.some(v => v && v > 0);
+  document.getElementById("chart-legend").hidden = !hasDebt;
+
+  const lab = ChartKit.labelFormatter(days);
+  const labels = d.labels.map(s => lab(new Date(s)));
+
+  const c1 = ChartKit.css("--series-1");
+  const ds = [{
+    label: "Чистая стоимость", data: d.net, fill: true,
+    backgroundColor: c1 + "22", ...ChartKit.mark(c1, n),
+  }];
+  if (hasDebt) {
+    ds.push(
+      {label: "Активы", data: d.value, fill: false,
+       ...ChartKit.mark(ChartKit.css("--series-2"), n)},
+      {label: "Долг", data: d.debt, fill: false,
+       ...ChartKit.mark(ChartKit.css("--series-3"), n)},
+    );
+  }
+
+  // масштаб оси по всем видимым сериям сразу
+  const all = ds.flatMap(x => x.data);
+  const opts = ChartKit.options(all,
+    c => " " + c.dataset.label + ": " + ChartKit.usd(c.parsed.y));
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("equity"),
+                    {type: "line", data: {labels: labels, datasets: ds}, options: opts});
+
+  const tb = document.querySelector("#chart-table tbody");
+  tb.innerHTML = d.labels.map((l, i) =>
+    "<tr><td>" + new Date(l).toLocaleString("ru-RU") + "</td>" +
+    '<td class="num">' + ChartKit.usd(d.net[i]) + "</td>" +
+    '<td class="num">' + ChartKit.usd(d.value[i]) + "</td>" +
+    '<td class="num">' + ChartKit.usd(d.debt[i]) + "</td></tr>"
+  ).reverse().join("");
+}
+
+ChartKit.rangeButtons(document.querySelector(".filters .seg"), d => { days = d; loadChart(); });
+document.addEventListener("themechange", loadChart);   // цвета берутся из CSS-переменных
+loadChart();
+setInterval(loadChart, 300000);
+</script>
+{% endblock %}

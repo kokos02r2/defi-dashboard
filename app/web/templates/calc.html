@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}Калькулятор пула — DeFi Dashboard{% endblock %}
+{% set active = 'calc' %}
+
+{% block content %}
+<h1 class="page">Калькулятор пула</h1>
+<div class="page-sub">
+  Что будет с позицией Uniswap V3 внутри диапазона: сколько монеты и стейбла окажется
+  на руках при каждой цене и по какой средней цене пройдёт конверсия. Считается прямо
+  здесь, ничего не сохраняется.
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Параметры</h2>
+  <div class="body">
+    <div class="seg" role="group" aria-label="Сценарий" style="margin-bottom:14px">
+      <button type="button" id="mode-sell" aria-pressed="true">Вхожу монетой снизу → продаю на росте</button>
+      <button type="button" id="mode-buy" aria-pressed="false">Вхожу стейблом сверху → покупаю на падении</button>
+    </div>
+
+    <div class="calc-grid">
+      <label>
+        <span>Базовый актив</span>
+        <input type="text" id="base" value="ETH">
+      </label>
+      <label>
+        <span>Котируемый</span>
+        <input type="text" id="quote" value="USDC">
+      </label>
+      <label>
+        <span>Нижняя граница</span>
+        <input type="text" id="pa" value="1954" inputmode="decimal">
+      </label>
+      <label>
+        <span>Верхняя граница</span>
+        <input type="text" id="pb" value="3381" inputmode="decimal">
+      </label>
+      <label>
+        <span>Текущая цена</span>
+        <input type="text" id="p" value="3381" inputmode="decimal">
+        <button type="button" class="btn ghost" id="use-market" style="margin-top:6px;font-size:12px">
+          подставить курс
+        </button>
+      </label>
+      <label>
+        <span id="amount-label">Вношу монеты на нижней границе</span>
+        <input type="text" id="amount" value="6.24012" inputmode="decimal">
+      </label>
+    </div>
+    <div id="calc-error" class="note" style="display:none;border-left:3px solid var(--critical)"></div>
+  </div>
+</div>
+
+{# Две цифры, ради которых всё и затевается: что будет на каждом краю диапазона #}
+<div class="tiles">
+  <div class="tile">
+    <div class="label" id="lo-label">На нижней границе</div>
+    <div class="value" id="lo-amount">—</div>
+    <div class="sub" id="lo-sub"></div>
+    <div class="sub" id="lo-avg"></div>
+  </div>
+  <div class="tile">
+    <div class="label" id="hi-label">На верхней границе</div>
+    <div class="value" id="hi-amount">—</div>
+    <div class="sub" id="hi-sub"></div>
+    <div class="sub" id="hi-avg"></div>
+  </div>
+  <div class="tile">
+    <div class="label">Средняя цена при полном проходе</div>
+    <div class="value" id="full-avg">—</div>
+    <div class="sub">среднее геометрическое границ, √(нижняя·верхняя)</div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Сейчас, при текущей цене</h2>
+    <div class="body">
+      <dl class="kv">
+        <dt>В позиции</dt><dd id="now-pos">—</dd>
+        <dt>Стоимость</dt><dd id="now-value">—</dd>
+        <dt id="now-done-label">Пройдено</dt><dd id="now-done">—</dd>
+        <dt>Средняя цена на этот момент</dt><dd id="now-avg">—</dd>
+        <dt>Доли по стоимости</dt><dd id="now-split">—</dd>
+        <dt>Ликвидность L</dt><dd id="now-l">—</dd>
+      </dl>
+      <div class="note" id="now-note"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Как это работает</h2>
+    <div class="body">
+      <div class="note" style="margin-top:0">
+        Внутри диапазона позиция обменивает один актив на другой постепенно, а не разом.
+        Средняя цена такой конверсии на участке от P₁ до P₂ равна <b>√(P₁·P₂)</b> —
+        среднему геометрическому, а не среднему арифметическому. Поэтому при широком
+        диапазоне средняя заметно ниже середины: у 1954…3381 середина 2667, а средняя
+        конверсии 2570.
+      </div>
+      <div class="note">
+        Комиссии здесь не учитываются — калькулятор показывает только результат
+        конверсии. Реальный выход будет лучше на величину собранных комиссий.
+      </div>
+      <div class="note">
+        Цена ниже нижней границы или выше верхней ничего не меняет: позиция уже
+        полностью перешла в один актив и дальше просто следует за его курсом.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="chart-head">
+    <h2>Раскладка по диапазону</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">шаг по цене от нижней границы к верхней</span>
+  </div>
+  <div class="table-scroll">
+    <table class="positions" id="ladder">
+      <thead><tr id="ladder-head"></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<style>
+  .calc-grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  }
+  .calc-grid label span {
+    display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 5px;
+  }
+  .calc-grid input { width: 100%; }
+  #ladder td { font-variant-numeric: tabular-nums; }
+  #ladder tr.at-now { background: color-mix(in oklab, var(--series-1) 10%, transparent); }
+  #ladder tr.at-now td { font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let SELL = true;   // true — вхожу монетой снизу и продаю на росте
+
+const $ = id => document.getElementById(id);
+const num = id => {
+  const raw = ($(id).value || "").replace(/\s| /g, "").replace(",", ".");
+  const v = parseFloat(raw);
+  return Number.isFinite(v) ? v : NaN;
+};
+const fmt = (v, d = 2) => v === null || !Number.isFinite(v) ? "—"
+  : v.toLocaleString("ru-RU", {minimumFractionDigits: d, maximumFractionDigits: d});
+const coin = v => fmt(v, 6);
+
+function setMode(sell) {
+  SELL = sell;
+  $("mode-sell").setAttribute("aria-pressed", String(sell));
+  $("mode-buy").setAttribute("aria-pressed", String(!sell));
+  recalc();
+}
+
+function recalc() {
+  const base = $("base").value.trim() || "ETH";
+  const quote = $("quote").value.trim() || "USDC";
+  const Pa = num("pa"), Pb = num("pb"), P = num("p"), amt = num("amount");
+
+  $("amount-label").textContent = SELL
+    ? `Вношу ${base} на нижней границе`
+    : `Вношу ${quote} на верхней границе`;
+
+  const err = $("calc-error");
+  if (!Number.isFinite(Pa) || !Number.isFinite(Pb) || !Number.isFinite(amt) || Pa <= 0 || Pb <= 0 || amt <= 0) {
+    err.style.display = "block";
+    err.textContent = "Заполните границы и количество положительными числами.";
+    return;
+  }
+  if (Pb <= Pa) {
+    err.style.display = "block";
+    err.textContent = "Верхняя граница должна быть выше нижней.";
+    return;
+  }
+  err.style.display = "none";
+
+  const sa = Math.sqrt(Pa), sb = Math.sqrt(Pb);
+  // ликвидность из того, чем входим: снизу позиция целиком в монете, сверху — в стейбле
+  const L = SELL ? amt / (1 / sa - 1 / sb) : amt / (sb - sa);
+
+  const baseAt = s => L * (1 / s - 1 / sb);
+  const quoteAt = s => L * (s - sa);
+  const baseMax = baseAt(sa);      // всё в монете, на нижней границе
+  const quoteMax = quoteAt(sb);    // всё в стейбле, на верхней
+
+  // ── края диапазона
+  $("lo-label").textContent = `На нижней границе · ${fmt(Pa)}`;
+  $("lo-amount").textContent = `${coin(baseMax)} ${base}`;
+  $("lo-sub").textContent = `= ${fmt(baseMax * Pa)} ${quote} по цене ${fmt(Pa)}`;
+  $("hi-label").textContent = `На верхней границе · ${fmt(Pb)}`;
+  $("hi-amount").textContent = `${fmt(quoteMax)} ${quote}`;
+  $("hi-sub").textContent = `= ${coin(quoteMax / Pb)} ${base} по цене ${fmt(Pb)}`;
+
+  const fullAvg = Math.sqrt(Pa * Pb);
+  $("full-avg").textContent = `${fmt(fullAvg)}`;
+  $("lo-avg").textContent = SELL ? "" : `куплено по ${fmt(fullAvg)} ${quote} за 1 ${base}`;
+  $("hi-avg").textContent = SELL ? `продано по ${fmt(fullAvg)} ${quote} за 1 ${base}` : "";
+
+  // ── текущая цена
+  const Pc = Number.isFinite(P) ? Math.min(Math.max(P, Pa), Pb) : Pb;
+  const sc = Math.sqrt(Pc);
+  const bNow = baseAt(sc), qNow = quoteAt(sc);
+  const valQ = bNow * Pc + qNow;
+
+  $("now-pos").textContent = `${coin(bNow)} ${base} + ${fmt(qNow)} ${quote}`;
+  $("now-value").textContent = `${fmt(valQ)} ${quote}  ·  ${coin(valQ / Pc)} ${base}`;
+  $("now-l").textContent = fmt(L, 4);
+
+  const bShare = valQ > 0 ? (bNow * Pc) / valQ * 100 : 0;
+  $("now-split").textContent = `${base} ${fmt(bShare, 1)}% · ${quote} ${fmt(100 - bShare, 1)}%`;
+
+  if (SELL) {
+    const sold = baseMax - bNow;
+    $("now-done-label").textContent = "Продано";
+    $("now-done").textContent = `${coin(sold)} ${base} → ${fmt(qNow)} ${quote}`;
+    // средняя цена конверсии на пройденном участке = √(Pa·P) = sa·sc
+    $("now-avg").textContent = sold > 1e-12 ? `${fmt(sa * sc)} ${quote} за 1 ${base}` : "—";
+  } else {
+    const spent = quoteMax - qNow;
+    $("now-done-label").textContent = "Куплено";
+    $("now-done").textContent = `${coin(bNow)} ${base} за ${fmt(spent)} ${quote}`;
+    $("now-avg").textContent = bNow > 1e-12 ? `${fmt(sb * sc)} ${quote} за 1 ${base}` : "—";
+  }
+
+  $("now-note").textContent = !Number.isFinite(P) ? "Текущая цена не задана — показан край диапазона."
+    : (P < Pa ? `Цена ниже диапазона: позиция целиком в ${base}, дальше просто следует за курсом.`
+    : (P > Pb ? `Цена выше диапазона: позиция целиком в ${quote}, конверсия закончена.`
+    : ""));
+
+  // ── раскладка по шагам.
+  // «Стоимость» — сколько получится, если на этой цене закрыть позицию и всё свести
+  // в один актив. Это и есть ответ на «сколько у меня будет в долларах или в монетах».
+  const head = ["Цена", `${base} в позиции`, `${quote} в позиции`,
+                `Стоимость, ${quote}`, `Стоимость, ${base}`,
+                SELL ? "Средняя цена продажи" : "Средняя цена набора"];
+  $("ladder-head").innerHTML = head
+    .map((h, i) => `<th${i ? ' class="num"' : ""}>${h}</th>`).join("");
+
+  const STEPS = 20;
+  const rows = [];
+  for (let i = 0; i <= STEPS; i++) {
+    const price = Pa + (Pb - Pa) * i / STEPS;
+    const s = Math.sqrt(price);
+    const b = baseAt(s), q = quoteAt(s);
+    const val = b * price + q;
+    const done = SELL ? baseMax - b : b;
+    const avg = SELL ? sa * s : sb * s;
+    const near = Number.isFinite(P) && Math.abs(price - Pc) <= (Pb - Pa) / STEPS / 2;
+    rows.push(
+      `<tr class="${near ? "at-now" : ""}">` +
+      `<td>${fmt(price)}</td>` +
+      `<td class="num">${coin(b)}</td>` +
+      `<td class="num">${fmt(q)}</td>` +
+      `<td class="num">${fmt(val)}</td>` +
+      `<td class="num">${coin(val / price)}</td>` +
+      `<td class="num">${done > 1e-12 ? fmt(avg) : "—"}</td></tr>`
+    );
+  }
+  document.querySelector("#ladder tbody").innerHTML = rows.join("");
+}
+
+["base", "quote", "pa", "pb", "p", "amount"].forEach(id =>
+  $(id).addEventListener("input", recalc));
+$("mode-sell").addEventListener("click", () => setMode(true));
+$("mode-buy").addEventListener("click", () => setMode(false));
+
+$("use-market").addEventListener("click", async () => {
+  const sym = ($("base").value || "ETH").trim().toUpperCase();
+  try {
+    const r = await fetch("/api/market");
+    const d = await r.json();
+    const hit = (d.rates || []).find(x => x.symbol === sym || sym.endsWith(x.symbol));
+    if (hit) { $("p").value = hit.price.toFixed(2); recalc(); }
+    else { $("use-market").textContent = "курс не найден"; }
+  } catch (e) { $("use-market").textContent = "курс недоступен"; }
+});
+
+recalc();
+</script>
+{% endblock %}

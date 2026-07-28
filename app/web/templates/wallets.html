@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Кошельки — DeFi Dashboard{% endblock %}
+{% set active = 'wallets' %}
+
+{% block content %}
+<h1 class="page">Кошельки</h1>
+<div class="page-sub">
+  Только публичные адреса. Приватные ключи и seed-фразы приложению не нужны —
+  оно ничего не подписывает и не отправляет транзакции.
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="alert danger" style="margin-bottom:16px">
+  <span class="ic">✕</span><span>{{ request.query_params.get('error') }}</span>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Добавить</h2>
+  <div class="body">
+    <form method="post" action="/wallets/add" style="display:flex;gap:8px;flex-wrap:wrap">
+      <input type="text" name="address" placeholder="0x… или ENS-имя" required
+             style="flex:1;min-width:280px">
+      <input type="text" name="label" placeholder="Название (необязательно)" style="min-width:180px">
+      <button class="btn primary" type="submit">Добавить</button>
+    </form>
+    <div class="note">
+      После добавления сразу запустится полная синхронизация: она сканирует историю
+      по всем сетям и может занять несколько минут. Дальше данные обновляются сами.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Отслеживаются</h2>
+  <div class="table-scroll">
+  {% if wallets %}
+  <table class="positions">
+    <thead>
+      <tr><th>Адрес</th><th>Название</th><th class="num">Позиций</th><th>Состояние</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for w in wallets %}
+      <tr>
+        <td style="font-variant-numeric:tabular-nums">{{ w.address }}</td>
+        <td>{{ w.label or '—' }}</td>
+        <td class="num">{{ counts.get(w.id, 0) }}</td>
+        <td>
+          {% if w.enabled %}<span class="status ok">✓ активен</span>
+          {% else %}<span class="status off">● выключен</span>{% endif %}
+        </td>
+        <td style="text-align:right;white-space:nowrap">
+          <form method="post" action="/wallets/{{ w.id }}/toggle" style="display:inline">
+            <button class="btn ghost" type="submit">{{ 'Выключить' if w.enabled else 'Включить' }}</button>
+          </form>
+          <form method="post" action="/wallets/{{ w.id }}/delete" style="display:inline"
+                onsubmit="return confirm('Удалить кошелёк {{ w.short }} вместе со всей его историей в базе?')">
+            <button class="btn ghost danger" type="submit">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">Пока ни одного кошелька.</div>
+  {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Уведомления</h2>
+  <div class="body">
+    {% if notify.configured %}
+      <dl class="kv">
+        <dt>Telegram</dt><dd><span class="status ok">✓ настроен</span></dd>
+        <dt>Порог health factor</dt><dd>{{ config.ALERT_HEALTH_FACTOR }}</dd>
+        <dt>Пауза против дребезга</dt><dd>{{ (config.ALERT_COOLDOWN / 60) | round(0) }} мин</dd>
+        <dt>Отправлено алертов</dt><dd>{{ notify.sent }}{% if notify.failed %} · <span class="status bad">✕ не доставлено {{ notify.failed }}</span>{% endif %}</dd>
+        {% if notify.last %}<dt>Последнее</dt><dd>{{ notify.last.notified_at | ts_short }}</dd>{% endif %}
+      </dl>
+    {% else %}
+      <div class="note" style="margin-top:0">
+        <span class="status warn">▲ Telegram не настроен</span> — алерты копятся только
+        в дашборде.
+        {% if not notify.enabled %}Уведомления выключены через <code>NOTIFY_ENABLED</code>.
+        {% elif not notify.has_token %}Не задан <code>TELEGRAM_BOT_TOKEN</code>.
+        {% elif not notify.has_chat %}Не задан <code>TELEGRAM_CHAT_ID</code> —
+        выполните <code>manage.py notify-chatid</code>.{% endif %}
+      </div>
+    {% endif %}
+    <div class="note">
+      Уведомления приходят, только пока приложение работает. Спящий или выключенный
+      компьютер означает, что просадку никто не заметит — для круглосуточного контроля
+      риска дашборд нужно выносить на сервер.
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Обновление</h2>
+  <div class="body">
+    <dl class="kv">
+      <dt>Состояние активных позиций</dt><dd>каждые {{ config.LIVE_INTERVAL }} с</dd>
+      <dt>Поиск новых позиций и событий</dt><dd>каждые {{ (config.SYNC_INTERVAL / 3600) | round(1) }} ч</dd>
+      <dt>Точка на графике капитала</dt><dd>не чаще, чем раз в {{ (config.SNAPSHOT_INTERVAL / 60) | round(0) }} мин</dd>
+      <dt>Сети</dt><dd>{{ config.ENABLED_CHAINS | join(', ') }}</dd>
+      {% if status.last_sync %}
+      <dt>Последняя синхронизация</dt>
+      <dd>{{ status.last_sync.started_at[:16] | replace('T', ' ') }} UTC ·
+          {{ status.last_sync.positions }} позиций за {{ status.last_sync.get('elapsed', '?') }} с</dd>
+      {% endif %}
+      {% if status.last_live %}
+      <dt>Последнее live-обновление</dt>
+      <dd>{{ status.last_live.started_at[:16] | replace('T', ' ') }} UTC</dd>
+      {% endif %}
+    </dl>
+    {% if status.last_sync and status.last_sync.errors %}
+    <div class="note">
+      <b>Замечания последней синхронизации:</b>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        {% for e in status.last_sync.errors[:8] %}<li>{{ e }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

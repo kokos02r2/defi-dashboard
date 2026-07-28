@@ -1,0 +1,37 @@
+name: deploy
+
+# Выкладка на сервер по пушу в main. Плюс кнопка ручного запуска во вкладке Actions.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # два деплоя подряд не должны перезапускать сервис одновременно
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Подключиться и обновить
+        env:
+          SSH_KEY:  ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          # необязательный, но правильный: отпечаток сервера вместо доверия при первом
+          # подключении. Пусто — берём ключ через ssh-keyscan.
+          SSH_HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "${SSH_HOST_KEY:-}" ]; then
+            printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+          ssh -o BatchMode=yes "$SSH_USER@$SSH_HOST" 'bash /opt/dashboard/deploy/deploy.sh'

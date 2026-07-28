@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+{% import "partials/_macros.html" as m %}
+{% block title %}{{ pos.title }} — DeFi Dashboard{% endblock %}
+
+{% block content %}
+<a href="/" class="meta" style="font-size:12.5px">← к портфелю</a>
+<h1 class="page" style="margin-top:10px">{{ pos.title }}</h1>
+<div class="page-sub">
+  {{ m.protocol_chip(pos) }}
+  <span style="margin:0 8px">·</span>{{ chain.name if chain else pos.chain }}
+  <span style="margin:0 8px">·</span>{{ m.position_status(pos) }}
+  {% if pos.opened_at %}<span style="margin:0 8px">·</span>открыта {{ pos.opened_at | ts }}{% endif %}
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">{{ 'Чистая стоимость' if pos.debt_usd else 'Стоимость сейчас' }}</div>
+    <div class="value">{{ pos.net_usd | usd_short }}</div>
+    {% if pos.debt_usd %}<div class="sub">залог {{ pos.value_usd | usd_short }} · долг {{ pos.debt_usd | usd_short }}</div>{% endif %}
+  </div>
+  {% if pos.fees_unclaimed_usd is not none %}
+  <div class="tile">
+    <div class="label">Не собрано комиссий</div>
+    <div class="value">{{ pos.fees_unclaimed_usd | usd_short }}</div>
+    {% if pos.fees_claimed_usd %}<div class="sub">заклеймлено {{ pos.fees_claimed_usd | usd_short }}</div>{% endif %}
+  </div>
+  {% endif %}
+  {% if pos.pnl_usd is not none %}
+  <div class="tile">
+    <div class="label">PnL с комиссиями</div>
+    <div class="value sm">{{ m.delta(pos.pnl_usd, pos.pnl_pct) }}</div>
+    <div class="sub">вложено {{ pos.deposited_usd | usd_short }}</div>
+  </div>
+  {% endif %}
+  {% if pos.apr is not none %}
+  <div class="tile">
+    <div class="label">{{ 'Годовые на капитал' if pos.protocol == 'fluid_vault' else 'Годовые по комиссиям' }}</div>
+    <div class="value sm">{{ pos.apr | pct(2) }}</div>
+    {% if d.usd and d.usd.days %}<div class="sub">за {{ '%.1f' % d.usd.days }} дн. работы</div>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if d.kind == 'univ3' %}
+{# ------------------------------------------------------------- Uniswap V3 #}
+<div class="grid2">
+  <div class="card">
+    <h2>Диапазон</h2>
+    <div class="body">
+      {% set r = d.range or {} %}
+      {% if r.get('position_pct') is not none %}
+        {{ m.rangebar(pos) }}
+        <dl class="kv" style="margin-top:14px">
+          <dt>Текущая цена</dt><dd>{{ r.current | price }} {{ d.token1.symbol }}/{{ d.token0.symbol }}</dd>
+          <dt>Обратный курс</dt><dd>{{ r.current_inv | price }} {{ d.token0.symbol }}/{{ d.token1.symbol }}</dd>
+          <dt>Границы</dt><dd>{{ r.lower | price }} … {{ r.upper | price }}</dd>
+          <dt>Ширина</dt><dd>{{ r.width }}</dd>
+          <dt>Тики</dt><dd>{{ r.tick_lower }} … {{ r.tick_upper }} (сейчас {{ r.tick_current }})</dd>
+        </dl>
+        {% if r.side %}
+        <div class="note">
+          <span class="status warn">▲ Вне диапазона</span> — ликвидность целиком в {{ r.side }},
+          комиссии не начисляются.
+        </div>
+        {% endif %}
+      {% else %}
+        <div class="empty">Состояние пула недоступно</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Содержимое и комиссии</h2>
+    <div class="body">
+      <dl class="kv">
+        <dt>Сейчас в пуле</dt>
+        <dd>{{ d.amount0 | amt(d.token0.decimals) }} {{ d.token0.symbol }}<br>
+            {{ d.amount1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}</dd>
+        <dt>Не собрано</dt>
+        <dd>{{ d.fees0 | amt(d.token0.decimals) }} {{ d.token0.symbol }}<br>
+            {{ d.fees1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}</dd>
+        {% if d.history and d.history.available %}
+        <dt>Вложено всего</dt>
+        <dd>{{ d.history.deposited0 | amt(d.token0.decimals) }} {{ d.token0.symbol }}<br>
+            {{ d.history.deposited1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}</dd>
+        {% if d.history.withdrawn0 != '0' or d.history.withdrawn1 != '0' %}
+        <dt>Выведено тела</dt>
+        <dd>{{ d.history.withdrawn0 | amt(d.token0.decimals) }} {{ d.token0.symbol }}<br>
+            {{ d.history.withdrawn1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}</dd>
+        {% endif %}
+        <dt>Заклеймлено</dt>
+        <dd>{{ d.history.fees_collected0 | amt(d.token0.decimals) }} {{ d.token0.symbol }}<br>
+            {{ d.history.fees_collected1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}</dd>
+        {% endif %}
+        <dt>Курсы сейчас</dt>
+        <dd>{{ d.token0.symbol }} ${{ d.usd.price0_usd | usd_price }}<br>
+            {{ d.token1.symbol }} ${{ d.usd.price1_usd | usd_price }}</dd>
+      </dl>
+      {% if d.history and d.history.partial %}
+      <div class="note">
+        <span class="status warn">▲ История неполная</span> — нода режет диапазон блоков,
+        прочитан только блок открытия. PnL и годовые по ней не считаются.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% set a = d.acquisition or {} %}
+{% if a.get('range_avg') %}
+{% set buy = a.get('direction') == 'buy' %}
+<div class="card" style="margin-top:16px">
+  <h2>Средняя цена {{ 'продажи' if a.get('direction') == 'sell' else 'набора' }} {{ a.base_symbol }}</h2>
+  <div class="body">
+    <dl class="kv">
+      {% if a.get('actual_avg') %}
+      <dt><b>Фактическая средняя</b></dt>
+      <dd><b>{{ a.actual_avg | price }} {{ a.unit }}</b></dd>
+      <dt>{{ 'Набрано' if buy else 'Продано' }}</dt>
+      <dd>{{ '%.6f' % a.base_abs }} {{ a.base_symbol }}
+          {{ 'за' if buy else '→' }} {{ '%.2f' % a.quote_abs }} {{ a.quote_symbol }}</dd>
+      {% endif %}
+      <dt>Если пройти весь диапазон</dt>
+      <dd>{{ a.range_avg | price }} {{ a.unit }}</dd>
+      <dt>Границы диапазона</dt>
+      <dd>{{ a.range_low | price }} … {{ a.range_high | price }}</dd>
+      <dt>Цена сейчас</dt><dd>{{ a.current_price | price }} {{ a.unit }}</dd>
+    </dl>
+
+    {% if buy %}
+    <div style="margin-top:14px">
+      <a class="btn primary"
+         {# разделители параметров именно &amp;: голый &note читается браузером как
+            сущность ¬ и ломает ссылку ещё до отправки #}
+         href="/lots?symbol={{ a.base_symbol | urlencode }}&amp;amount={{ '%.8f' % a.base_abs }}&amp;price={{ '%.6f' % a.actual_avg }}&amp;note={{ (pos.title ~ ' · ' ~ pos.chain) | urlencode }}&amp;source={{ pos.id }}">
+        Записать в партии
+      </a>
+      <span class="meta" style="margin-left:8px">форма заполнится сама</span>
+    </div>
+    {% endif %}
+
+    <div class="note">
+      Проходя диапазон вниз, позиция набирает {{ a.base_symbol }} и тратит
+      {{ a.quote_symbol }}; вверх — наоборот, распродаёт. Средняя цена такой конверсии
+      равна среднему геометрическому цен на концах пройденного участка, √(P₁·P₂).
+      Пройдя диапазон целиком, позиция отработает ровно по {{ a.range_avg | price }},
+      и это известно заранее, ещё до открытия.
+      {% if a.get('actual_avg') %}
+      Фактическая цифра выше посчитана не по формуле, а по реальным движениям токенов:
+      сколько {{ a.base_symbol }} прибавилось или убыло против внесённого и сколько
+      {{ a.quote_symbol }} на это ушло или пришло. Комиссии в неё не входят — нужна
+      цена конверсии, а не доход.
+      {% endif %}
+    </div>
+    {% if a.get('fully_converted') %}
+    <div class="note">
+      <span class="status warn">▲ Позиция полностью перешла в {{ a.base_symbol }}</span> —
+      диапазон пройден до конца, набор закончен.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if d.usd.get('breakeven_deposited') or d.usd.get('max_value_usd') %}
+<div class="card" style="margin-top:16px">
+  <h2>Безубыток и потолок</h2>
+  <div class="body">
+    <dl class="kv">
+      {% set be = d.usd.get('breakeven_deposited') %}
+      {% if be %}
+        <dt>Безубыток</dt>
+        <dd>
+          {% if be.status == 'unreachable' %}
+            <span class="status bad">✕ недостижим</span> — максимум {{ be.max_value_usd | usd }}
+            из нужных {{ be.target_usd | usd }}
+          {% else %}
+            {{ (1 / be.price if be.quote_is_token0 and be.price else be.price) | price }}
+            {{ d.token0.symbol if be.quote_is_token0 else d.token1.symbol }}
+            за 1 {{ d.token1.symbol if be.quote_is_token0 else d.token0.symbol }}
+            {% if be.status == 'below_range' %}<span class="meta">(ниже диапазона)</span>{% endif %}
+          {% endif %}
+        </dd>
+      {% endif %}
+      {% if d.usd.get('max_value_usd') %}
+        <dt>Потолок стоимости</dt>
+        <dd>{{ d.usd.max_value_usd | usd }}</dd>
+      {% endif %}
+      {% if d.usd.get('il') is not none %}
+        <dt>Против HODL</dt>
+        <dd>{{ m.delta(d.usd.il, d.usd.get('il_pct')) }}</dd>
+      {% endif %}
+      {% if d.usd.get('fee_apy') is not none %}
+        <dt>APY с реинвестом</dt><dd>{{ d.usd.fee_apy | pct(2) }}</dd>
+      {% endif %}
+    </dl>
+    {% if d.usd.get('max_value_usd') %}
+    <div class="note">
+      На верхней границе диапазона позиция полностью распродана в котирующий токен —
+      дальнейший рост цены на неё уже не влияет. Комиссии в расчёт безубытка не входят:
+      с ними он был бы ниже.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% elif d.kind == 'fluid_vault' %}
+{# ------------------------------------------------------------- Fluid Vault #}
+<div class="grid2">
+  <div class="card">
+    <h2>Риск ликвидации</h2>
+    <div class="body">
+      {% set r = d.risk %}
+      {% if r.get('unavailable') %}
+      <div class="note" style="margin:0 0 12px">
+        <span class="status warn">▲ Метрики риска не рассчитаны</span> — это smart-позиция:
+        залог и долг хранятся в долях DEX-пула Fluid, а не в токенах. Оракул связывает
+        доли пулов, поэтому обычная формула health factor к ней неприменима и дала бы
+        заведомо ложное число. Нужен DexResolver.
+      </div>
+      {% endif %}
+      <dl class="kv">
+        <dt>Health factor</dt>
+        <dd>
+          {% if r.health_factor is not none %}{{ m.health(r.health_factor) }}
+          {% elif r.get('unavailable') %}<span class="status off">— не рассчитан</span>
+          {% else %}<span class="status ok">✓ долга нет</span>{% endif %}
+        </dd>
+        <dt>LTV сейчас</dt><dd>{{ r.ltv_pct | pct(2) if r.ltv_pct is not none else '—' }}</dd>
+        <dt>Порог ликвидации</dt><dd>{{ r.liquidation_threshold | pct(1) }}</dd>
+        <dt>Макс. заём (CF)</dt><dd>{{ r.collateral_factor | pct(1) }}</dd>
+        <dt>Штраф ликвидации</dt><dd>{{ r.liquidation_penalty | pct(2) }}</dd>
+        {% if r.current_price %}
+        <dt>Курс залога</dt><dd>{{ r.current_price | price }} {{ r.price_unit }}</dd>
+        {% endif %}
+        {% if r.liquidation_price %}
+        <dt>Цена ликвидации</dt>
+        <dd><span class="status bad">✕ {{ r.liquidation_price | price }}</span> {{ r.price_unit }}</dd>
+        <dt>Запас до неё</dt>
+        <dd>{{ r.drop_to_liquidation_pct | pct(1, true) }}</dd>
+        {% endif %}
+      </dl>
+      {% if r.liquidation_price %}
+      <div class="note">
+        Риск считается по ончейн-оракулу самого Fluid — ликвидация произойдёт именно
+        по нему, а не по биржевой цене. Долларовые суммы рядом взяты из DefiLlama,
+        чтобы позиция складывалась с остальным портфелем по одной методике.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Залог и долг</h2>
+    <div class="body">
+      <dl class="kv">
+        <dt>Залог</dt>
+        <dd>
+          {% if d.collateral.human is not none %}
+            {{ '%.6f' % d.collateral.human }} {{ d.collateral.symbol }}<br>
+            <span class="meta">{{ d.collateral.usd | usd }}</span>
+          {% else %}
+            {{ d.collateral.raw | amt(18) }} долей пула<br>
+            <span class="meta">{{ d.collateral.symbol }} · оценка недоступна</span>
+          {% endif %}
+        </dd>
+        <dt>Долг</dt>
+        <dd>
+          {% if d.debt.human is not none %}
+            {{ '%.6f' % d.debt.human }} {{ d.debt.symbol }}<br>
+            <span class="meta">{{ d.debt.usd | usd }}</span>
+          {% else %}
+            {{ d.debt.raw | amt(18) }} долей пула<br>
+            <span class="meta">{{ d.debt.symbol }} · оценка недоступна</span>
+          {% endif %}
+        </dd>
+        <dt>Ставка по залогу</dt><dd>{{ d.rates.supply | pct(2) }}</dd>
+        <dt>Ставка по долгу</dt><dd>{{ d.rates.borrow | pct(2) }}</dd>
+        {% if d.rates.net_on_equity is not none %}
+        <dt>Итого на капитал</dt><dd>{{ d.rates.net_on_equity | pct(2) }}</dd>
+        {% endif %}
+        <dt>Vault</dt><dd><a href="{{ d.explorer_vault }}" target="_blank" rel="noopener">#{{ d.vault_id }}</a></dd>
+        <dt>NFT позиции</dt><dd>{{ d.nft_id }}</dd>
+      </dl>
+      {% if d.smart_warning %}
+      <div class="note">
+        <span class="status warn">▲ Smart collateral / smart debt</span> — позиция хранится
+        в долях DEX-пула Fluid, а не в самом токене. Риск-метрики по оракулу верны,
+        а долларовая оценка требует DexResolver и здесь не показана.
+      </div>
+      {% endif %}
+      {% if d.is_liquidated %}
+      <div class="note"><span class="status bad">✕ Позиция была ликвидирована</span></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% elif d.kind == 'fluid_lending' %}
+{# ----------------------------------------------------------- Fluid Lending #}
+<div class="card">
+  <h2>Депозит</h2>
+  <div class="body">
+    <dl class="kv">
+      <dt>Сумма</dt>
+      <dd>{{ '%.6f' % d.underlying_human }} {{ d.asset.symbol }}<br>
+          <span class="meta">{{ pos.value_usd | usd }}</span></dd>
+      <dt>Базовая ставка</dt><dd>{{ d.supply_rate | pct(2) }}</dd>
+      {% if d.rewards_rate %}<dt>Награды</dt><dd>{{ d.rewards_rate | pct(2) }}</dd>{% endif %}
+      <dt>Курс {{ d.asset.symbol }}</dt><dd>${{ d.price_usd | usd_price }}</dd>
+      <dt>fToken</dt>
+      <dd><a href="{{ d.explorer_ftoken }}" target="_blank" rel="noopener">{{ d.ftoken_symbol }}</a></dd>
+    </dl>
+  </div>
+</div>
+{% endif %}
+
+{# ------------------------------------------------------- история позиции #}
+<div class="card" style="margin-top:16px">
+  <div class="chart-head">
+    <h2>{{ 'Залог, долг и капитал во времени' if d.kind == 'fluid_vault'
+           else 'Стоимость позиции во времени' }}</h2>
+    <span class="spacer"></span>
+    <span id="ph-note" style="font-size:12.5px;color:var(--ink-muted)"></span>
+    <div class="seg" id="ph-range" role="group" aria-label="Период графика">
+      <button type="button" data-days="7" aria-pressed="false">7д</button>
+      <button type="button" data-days="30" aria-pressed="true">30д</button>
+      <button type="button" data-days="90" aria-pressed="false">90д</button>
+      <button type="button" data-days="1825" aria-pressed="false">всё</button>
+    </div>
+  </div>
+  {% if d.kind == 'fluid_vault' %}
+  <div class="legend">
+    <span><i style="background:var(--series-1)"></i>Чистый капитал</span>
+    <span><i style="background:var(--series-2)"></i>Залог</span>
+    <span><i style="background:var(--series-3)"></i>Долг</span>
+  </div>
+  {% endif %}
+  <div class="chart-box" style="height:220px"><canvas id="poshist"></canvas></div>
+</div>
+
+{% if events %}
+<div class="card" style="margin-top:16px">
+  <h2>События ({{ events | length }})</h2>
+  <div class="table-scroll">
+    <table class="events">
+      <thead>
+        <tr><th>Когда</th><th>Что</th><th>Суммы</th><th class="num">В долларах на тот момент</th><th>Tx</th></tr>
+      </thead>
+      <tbody>
+      {% for e in events %}
+        <tr>
+          <td>{{ e.timestamp | ts }}</td>
+          <td>
+            {% if e.kind == 'increase' %}внесение
+            {% elif e.kind == 'decrease' %}изъятие
+            {% elif e.kind == 'collect' %}сбор комиссий
+            {% else %}перевод{% endif %}
+          </td>
+          <td>
+            {% if e.kind != 'transfer' %}
+              {{ e.amount0 | amt(d.token0.decimals) }} {{ d.token0.symbol }} +
+              {{ e.amount1 | amt(d.token1.decimals) }} {{ d.token1.symbol }}
+            {% else %}
+              <span class="meta">
+                {{ 'mint' if e.extra.get('from', '') | lower == '0x0000000000000000000000000000000000000000' else e.extra.get('from', '')[:10] }}
+                → {{ e.extra.get('to', '')[:10] }}
+              </span>
+            {% endif %}
+          </td>
+          <td class="num">
+            {{ e.usd_at_time | usd if e.usd_at_time is not none else '—' }}
+            {% if e.kind == 'collect' and e.fee_usd_at_time is not none %}
+              <div class="meta">из них комиссий {{ e.fee_usd_at_time | usd }}</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if e.tx and chain %}<a href="{{ chain.explorer }}/tx/{{ e.tx }}" target="_blank" rel="noopener">↗</a>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+const IS_OPEN = {{ 'true' if pos.is_open else 'false' }};
+const IS_VAULT = {{ 'true' if d.kind == 'fluid_vault' else 'false' }};
+let ph = null, phDays = 30;
+
+async function loadHist() {
+  const r = await fetch("/api/position/{{ pos.id }}/history?days=" + phDays);
+  if (!r.ok) return;
+  const d = await r.json();
+  const n = d.labels.length;
+
+  document.getElementById("ph-note").textContent = ChartKit.pointsNote(n, IS_OPEN);
+
+  const lab = ChartKit.labelFormatter(phDays);
+  const labels = d.labels.map(s => lab(new Date(s)));
+
+  // цвета закреплены за сущностью и совпадают с графиком портфеля на главной:
+  // синий — капитал, оранжевый — активы/залог, аквамарин — долг
+  const c1 = ChartKit.css("--series-1");
+  const datasets = IS_VAULT
+    ? [
+        {label: "Чистый капитал", data: d.net, fill: true,
+         backgroundColor: c1 + "22", ...ChartKit.mark(c1, n)},
+        {label: "Залог", data: d.value, fill: false,
+         ...ChartKit.mark(ChartKit.css("--series-2"), n)},
+        {label: "Долг", data: d.debt, fill: false,
+         ...ChartKit.mark(ChartKit.css("--series-3"), n)},
+      ]
+    : [
+        {label: "Стоимость", data: d.value, fill: true,
+         backgroundColor: c1 + "22", ...ChartKit.mark(c1, n)},
+      ];
+
+  // масштаб оси считаем по всем видимым сериям сразу
+  const all = datasets.flatMap(ds => ds.data);
+  const opts = ChartKit.options(all, c =>
+    // при одной серии её название уже в заголовке карточки
+    (IS_VAULT ? " " + c.dataset.label + ": " : " ") + ChartKit.usd(c.parsed.y));
+
+  if (ph) ph.destroy();
+  ph = new Chart(document.getElementById("poshist"),
+                 {type: "line", data: {labels: labels, datasets: datasets}, options: opts});
+}
+
+ChartKit.rangeButtons(document.getElementById("ph-range"), d => { phDays = d; loadHist(); });
+document.addEventListener("themechange", loadHist);
+loadHist();
+</script>
+{% endblock %}
