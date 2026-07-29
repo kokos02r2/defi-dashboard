@@ -104,10 +104,39 @@ header.top {
   position: sticky; top: 0; z-index: 20;
 }
 header.top .brand { font-weight: 620; font-size: 15px; letter-spacing: -.01em; }
-header.top nav { display: flex; gap: 14px; margin-left: 8px; }
-header.top nav a { color: var(--ink-2); font-weight: 500; }
-header.top nav a.active { color: var(--ink); }
 header.top .spacer { flex: 1; }
+
+/* Меню разделов: одна кнопка вместо семи ссылок. Семь ссылок в строку занимали
+   больше места, чем все курсы вместе, и переносили тикер на вторую строку. */
+.menu { position: relative; }
+.menu > summary {
+  list-style: none; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 560; color: var(--ink);
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px solid var(--hairline); border-radius: 8px;
+  background: var(--surface);
+}
+/* штатный треугольник у <summary> в Safari и Chrome рисуется по-разному — свой */
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > summary::after { content: "▾"; color: var(--ink-muted); font-size: 11px; }
+.menu > summary:hover { border-color: var(--ink-muted); }
+.menu[open] > summary { background: var(--surface-sunken); }
+.menu[open] > summary::after { content: "▴"; }
+
+.menu > nav {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30;
+  display: flex; flex-direction: column; min-width: 190px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.menu > nav a {
+  padding: 7px 10px; border-radius: 6px;
+  color: var(--ink-2); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.menu > nav a:hover { background: var(--surface-sunken); color: var(--ink); }
+.menu > nav a.active {
+  background: var(--surface-sunken); color: var(--ink); font-weight: 560;
+}
 
 /* Тикер ETH/BTC. min-height держит высоту шапки до подгрузки, чтобы не дёргалась */
 .ticker {

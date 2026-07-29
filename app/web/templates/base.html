@@ -18,15 +18,24 @@
 {% if user is defined and user %}
 <header class="top">
   <span class="brand">DeFi Dashboard</span>
-  <nav>
-    <a href="/" class="{{ 'active' if active == 'dash' }}">Портфель</a>
-    <a href="/fees" class="{{ 'active' if active == 'fees' }}">Комиссии</a>
-    <a href="/calc" class="{{ 'active' if active == 'calc' }}">Калькулятор</a>
-    <a href="/lots" class="{{ 'active' if active == 'lots' }}">Партии</a>
-    <a href="/btc" class="{{ 'active' if active == 'btc' }}">BTC</a>
-    <a href="/wallets" class="{{ 'active' if active == 'wallets' }}">Кошельки</a>
-    <a href="/settings" class="{{ 'active' if active == 'settings' }}">Настройки</a>
-  </nav>
+  {# Разделы свёрнуты в одну кнопку: семь ссылок в строку разрастались и выдавливали
+     курсы на вторую строку. На кнопке — название текущего раздела, иначе непонятно,
+     где ты находишься. <details> сворачивается сам, без библиотек и без JS. #}
+  {% set cur = active | default('', true) %}
+  {% set PAGES = [('/', 'dash', 'Портфель'), ('/fees', 'fees', 'Комиссии'),
+                  ('/lots', 'lots', 'Партии'), ('/btc', 'btc', 'BTC'),
+                  ('/calc', 'calc', 'Калькулятор'), ('/wallets', 'wallets', 'Кошельки'),
+                  ('/settings', 'settings', 'Настройки')] %}
+  {% set TITLES = {'dash': 'Портфель', 'fees': 'Комиссии', 'lots': 'Партии', 'btc': 'BTC',
+                   'calc': 'Калькулятор', 'wallets': 'Кошельки', 'settings': 'Настройки'} %}
+  <details class="menu" id="nav-menu">
+    <summary title="Разделы">{{ TITLES.get(cur) or 'Разделы' }}</summary>
+    <nav>
+      {% for href, key, title in PAGES %}
+        <a href="{{ href }}" class="{{ 'active' if key == cur }}">{{ title }}</a>
+      {% endfor %}
+    </nav>
+  </details>
 
   {# Тикер сам себя подгружает и обновляет — шапка не зависит от контекста страницы #}
   <span class="ticker" hx-get="/partials/market" hx-trigger="load, every 60s"
@@ -58,6 +67,17 @@
 </div>
 
 <script>
+  // <details> не закрывается сам ни щелчком мимо, ни по Esc, а открытая панель
+  // висит над страницей и мешает читать то, ради чего её и открыли.
+  document.addEventListener("click", function (e) {
+    var m = document.getElementById("nav-menu");
+    if (m && m.open && !m.contains(e.target)) m.open = false;
+  });
+  document.addEventListener("keydown", function (e) {
+    var m = document.getElementById("nav-menu");
+    if (e.key === "Escape" && m && m.open) { m.open = false; }
+  });
+
   function toggleTheme() {
     var cur = document.documentElement.getAttribute("data-theme");
     if (!cur) {
