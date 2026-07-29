@@ -17,12 +17,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import config
 from app.core import notify
 from app.core.chains import CHAINS, Chain, enabled_chains
+from app.core.inrange import portfolio as inrange_portfolio
 from app.core.market import market_rates
 from app.core.prices import PriceService
 from app.core.rpc import Rpc
@@ -413,6 +414,66 @@ def _write_snapshots(db: Session, force: bool = False) -> None:
                                 fees_unclaimed_usd=p.fees_unclaimed_usd,
                                 health_factor=p.health_factor, in_range=p.in_range))
     db.flush()
+
+
+# --------------------------------------------------------------------------------------
+# Ежедневная сводка
+# --------------------------------------------------------------------------------------
+
+def digest_payload(db: Session) -> dict:
+    """Цифры для ежедневной сводки. Собираются прямо здесь, без веб-слоя.
+
+    Изменение за сутки берётся из снапшота портфеля суточной давности: это тот же
+    ряд, что рисует график капитала, поэтому сводка и дашборд не могут разойтись.
+    """
+    positions = list(db.scalars(select(Position).where(Position.is_open.is_(True))).all())
+    net = sum(p.net_usd or 0 for p in positions)
+    now = utcnow()
+
+    # ближайший снапшот НЕ новее суток; если история младше — сравнивать не с чем
+    prev = db.scalar(select(Snapshot).where(Snapshot.wallet_id.is_(None),
+                                           Snapshot.ts <= now - timedelta(hours=24))
+                     .order_by(Snapshot.ts.desc()).limit(1))
+    delta = delta_pct = None
+    if prev is not None and prev.net_usd:
+        delta = net - prev.net_usd
+        delta_pct = delta / prev.net_usd * 100
+
+    collected_24h = db.scalar(
+        select(func.coalesce(func.sum(PositionEvent.fee_usd_at_time), 0.0))
+        .where(PositionEvent.kind == "collect",
+               PositionEvent.timestamp >= int((now - timedelta(hours=24)).timestamp())))
+
+    with_hf = [p for p in positions if p.health_factor is not None]
+    worst = min(with_hf, key=lambda p: p.health_factor) if with_hf else None
+    ir = inrange_portfolio(db, days=1)
+
+    return {
+        "net": net,
+        "net_delta": delta,
+        "net_delta_pct": delta_pct,
+        "fees_unclaimed": sum(p.fees_unclaimed_usd or 0 for p in positions),
+        "fees_collected": float(collected_24h or 0.0),
+        "open_count": len(positions),
+        "out_of_range": sum(1 for p in positions if p.in_range is False),
+        "worst_hf": worst.health_factor if worst else None,
+        "worst_hf_title": f"{worst.title} ({worst.chain})" if worst else None,
+        "hf_below_threshold": bool(worst and worst.health_factor < config.ALERT_HEALTH_FACTOR),
+        # долю времени показываем только когда наблюдений хватает, иначе она врёт
+        "inrange_pct": ir.pct if ir.reliable else None,
+    }
+
+
+def send_digest() -> bool:
+    """Собирает и отправляет сводку. Возвращает False, если отправить не удалось."""
+    if not config.telegram_configured():
+        log.info("[digest] Telegram не настроен — сводка не отправлена")
+        return False
+    with session_scope() as db:
+        text = notify.format_digest(digest_payload(db))
+    ok = notify.send(text)
+    log.info("[digest] сводка %s", "отправлена" if ok else "НЕ отправлена")
+    return ok
 
 
 def _set_kv(db: Session, key: str, value: dict) -> None:

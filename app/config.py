@@ -91,6 +91,23 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 NOTIFY_ENABLED = _bool("NOTIFY_ENABLED", True)
 
+# Ежедневная сводка. Время местное — то, которое показывают часы на этой машине:
+# «сводка в 9 утра» человек понимает буквально, а не как 9 по UTC.
+DIGEST_ENABLED = _bool("DIGEST_ENABLED", True)
+DIGEST_TIME = os.environ.get("DIGEST_TIME", "09:00").strip()
+
+
+def digest_at() -> tuple[int, int]:
+    """Час и минута сводки. Мусор в настройке не должен ронять планировщик."""
+    try:
+        hh, _, mm = DIGEST_TIME.partition(":")
+        hour, minute = int(hh), int(mm or 0)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except ValueError:
+        pass
+    return 9, 0
+
 # Адрес, по которому дашборд открывается у вас — уходит ссылкой в сообщения
 PUBLIC_URL = os.environ.get("PUBLIC_URL", f"http://{HOST}:{PORT}").rstrip("/")
 

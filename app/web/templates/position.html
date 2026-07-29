@@ -56,6 +56,22 @@
           <dt>Границы</dt><dd>{{ r.lower | price }} … {{ r.upper | price }}</dd>
           <dt>Ширина</dt><dd>{{ r.width }}</dd>
           <dt>Тики</dt><dd>{{ r.tick_lower }} … {{ r.tick_upper }} (сейчас {{ r.tick_current }})</dd>
+          {# Главная цифра про качество выбранного диапазона: узкий с 30% времени
+             внутри проигрывает широкому с 90%, хотя годовые у них похожи. #}
+          {% if inrange_all.reliable %}
+          <dt>Время в диапазоне</dt>
+          <dd>
+            <b>{{ inrange_all.pct | pct(0) }}</b>
+            {% if inrange_week.reliable and inrange_week.observations < inrange_all.observations %}
+              · за неделю {{ inrange_week.pct | pct(0) }}
+            {% endif %}
+            <div class="meta">
+              по {{ inrange_all.observations }} {{ inrange_all.observations | plural('замеру', 'замерам', 'замерам') }}
+              с {{ inrange_all.first.strftime('%d.%m') }}{% if inrange_all.coverage_pct and inrange_all.coverage_pct < 95 %},
+              наблюдение покрывает {{ inrange_all.coverage_pct | pct(0) }} периода{% endif %}
+            </div>
+          </dd>
+          {% endif %}
         </dl>
         {% if r.side %}
         <div class="note">

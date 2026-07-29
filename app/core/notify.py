@@ -129,20 +129,44 @@ def format_alerts(alerts: list) -> str:
     return "\n".join(lines)
 
 
-def format_digest(totals: dict, worst_hf, out_of_range: int) -> str:
-    """Ежедневная сводка. Не включена по умолчанию — вызывается только по расписанию."""
-    def usd(v):
-        return f"${v:,.2f}".replace(",", " ") if v is not None else "н/д"
+def _usd(v) -> str:
+    return f"${v:,.2f}".replace(",", " ") if v is not None else "н/д"
 
-    lines = [
-        "<b>Сводка по портфелю</b>", "",
-        f"Чистая стоимость: {usd(totals.get('net'))}",
-        f"Несобранные комиссии: {usd(totals.get('fees_unclaimed'))}",
-        f"Активных позиций: {totals.get('open_count', 0)}",
-    ]
-    if worst_hf is not None:
-        lines.append(f"Минимальный health factor: {worst_hf:.2f}")
-    if out_of_range:
-        lines.append(f"Вне диапазона: {out_of_range}")
+
+def format_digest(d: dict) -> str:
+    """Ежедневная сводка одним сообщением.
+
+    Смысл не в том, чтобы перечислить цифры, а чтобы за пять секунд чтения было
+    понятно: нужно ли что-то делать. Поэтому сначала изменение за сутки, потом то,
+    что требует внимания (риск ликвидации, выход из диапазона), и лишь затем итоги.
+    """
+    net, delta = d.get("net"), d.get("net_delta")
+    lines = ["<b>Сводка за сутки</b>", ""]
+
+    if delta is None:
+        lines.append(f"Чистая стоимость: <b>{_usd(net)}</b>")
+    else:
+        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "·")
+        pct = f" ({d['net_delta_pct']:+.2f}%)" if d.get("net_delta_pct") is not None else ""
+        lines.append(f"Чистая стоимость: <b>{_usd(net)}</b>  {arrow} ${abs(delta):,.2f}{pct}"
+                     .replace(",", " "))
+
+    if d.get("fees_collected") is not None:
+        lines.append(f"Собрано комиссий: {_usd(d['fees_collected'])}")
+    lines.append(f"Не собрано: {_usd(d.get('fees_unclaimed'))}")
+
+    # Внимание-строки: если их нет, это само по себе сообщение «всё спокойно»
+    attention: list[str] = []
+    if d.get("worst_hf") is not None:
+        mark = "🔴" if d.get("hf_below_threshold") else "🟢"
+        attention.append(f"{mark} минимальный health factor {d['worst_hf']:.2f}"
+                         + (f" — {_esc(d['worst_hf_title'])}" if d.get("worst_hf_title") else ""))
+    if d.get("out_of_range"):
+        attention.append(f"🟡 вне диапазона: {d['out_of_range']} из {d.get('open_count', 0)}")
+    if d.get("inrange_pct") is not None:
+        attention.append(f"⏱ в диапазоне за сутки: {d['inrange_pct']:.0f}% времени")
+    if attention:
+        lines += [""] + attention
+
     lines += ["", config.PUBLIC_URL]
     return "\n".join(lines)

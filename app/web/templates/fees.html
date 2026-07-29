@@ -144,6 +144,60 @@
   {% endif %}
 </div>
 
+{% if inrange_rows %}
+{# Время в диапазоне живёт на этой же странице не случайно: годовые по комиссиям
+   сравнивают пулы честно только при равной попадаемости. Узкий диапазон с 30%
+   времени внутри и широкий с 90% дают похожие годовые в те часы, когда работают,
+   а за месяц приносят совершенно разные деньги. #}
+<div class="card" style="margin-top:16px">
+  <h2>Время в диапазоне</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Позиция</th><th>Сеть</th><th class="num">В диапазоне</th>
+          <th class="num">Сейчас</th><th class="num">Замеров</th><th>Наблюдение с</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p, c in inrange_rows %}
+        <tr>
+          <td>
+            <div class="name"><a href="/position/{{ p.id }}">{{ p.title }}</a></div>
+            <div class="meta">#{{ p.external_id }}</div>
+          </td>
+          <td class="meta">{{ p.chain }}</td>
+          <td class="num">
+            <span class="{{ 'status ok' if c.pct >= 70 else ('status bad' if c.pct < 30 else 'status warn') }}">
+              {{ c.pct | pct(0) }}
+            </span>
+          </td>
+          <td class="num">
+            {% if p.in_range is none %}—
+            {% elif p.in_range %}<span class="status ok">внутри</span>
+            {% else %}<span class="status warn">вне</span>{% endif %}
+          </td>
+          <td class="num">{{ c.observations }}</td>
+          <td class="meta">
+            {{ c.first.strftime('%d.%m.%Y') }}
+            {% if c.coverage_pct and c.coverage_pct < 95 %}
+              <div class="meta">покрытие {{ c.coverage_pct | pct(0) }}</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    Считается по замерам раз в {{ snapshot_minutes }} минут, и замеры
+    идут только когда приложение работает. Поэтому это доля <b>наблюдённого</b> времени, а не
+    календарного: если мак спал, тех часов в данных нет вовсе — в таких случаях рядом
+    показано покрытие. Позиция вне диапазона комиссий не зарабатывает совсем.
+  </div>
+</div>
+{% endif %}
+
 {% if rep.pools %}
 <div class="card" style="margin-top:16px">
   <h2>По пулам</h2>

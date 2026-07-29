@@ -11,12 +11,13 @@ import logging
 import threading
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from tzlocal import get_localzone
 from sqlalchemy import select
 
 from app import config
 from app.db.base import session_scope
 from app.db.models import KV, Position, Wallet
-from app.jobs.refresh import refresh
+from app.jobs.refresh import refresh, send_digest
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,13 @@ def _sync() -> None:
         refresh("sync")
     except Exception:  # noqa: BLE001
         log.exception("[scheduler] sync упал")
+
+
+def _digest() -> None:
+    try:
+        send_digest()
+    except Exception:  # noqa: BLE001 — сводка не должна ронять планировщик
+        log.exception("[scheduler] сводка упала")
 
 
 def _bootstrap() -> None:
@@ -66,6 +74,14 @@ def start() -> None:
                       replace_existing=True)
     scheduler.add_job(_sync, "interval", seconds=config.SYNC_INTERVAL, id="sync",
                       replace_existing=True)
+    if config.DIGEST_ENABLED:
+        hour, minute = config.digest_at()
+        # timezone=local: время сводки задаётся местным, каким его видит человек,
+        # хотя сам планировщик живёт в UTC — с ним не спутать даты переходов
+        scheduler.add_job(_digest, "cron", hour=hour, minute=minute, id="digest",
+                          replace_existing=True, timezone=get_localzone(),
+                          misfire_grace_time=3600)
+        log.info("[scheduler] сводка в %02d:%02d по местному времени", hour, minute)
     scheduler.start()
     # стартовый прогон — отдельным потоком, чтобы не задерживать подъём веб-сервера
     threading.Thread(target=_bootstrap, name="bootstrap", daemon=True).start()

@@ -9,6 +9,7 @@
     .venv/bin/python manage.py stats
     .venv/bin/python manage.py notify-chatid    # найти свой chat_id
     .venv/bin/python manage.py notify-test      # проверить связь с ботом
+    .venv/bin/python manage.py digest           # отправить сводку прямо сейчас
 """
 
 from __future__ import annotations
@@ -99,6 +100,22 @@ def notify_test(_argv: list[str]) -> None:
         print("  отправить не удалось, смотрите TELEGRAM_CHAT_ID")
 
 
+def digest(_argv: list[str]) -> None:
+    """Отправляет ежедневную сводку немедленно.
+
+    Нужна, чтобы проверить и вид сообщения, и сами цифры, не дожидаясь утра.
+    """
+    from app.core.notify import format_digest
+    from app.jobs.refresh import digest_payload, send_digest
+    with session_scope() as db:
+        data = digest_payload(db)
+    print("  ── как будет выглядеть ──")
+    for line in format_digest(data).splitlines():
+        print("  " + line)
+    print("  ─────────────────────────")
+    print("  отправлено" if send_digest() else "  не отправлено (см. notify-test)")
+
+
 def notify_chatid(_argv: list[str]) -> None:
     """Показывает chat_id из последних сообщений боту — искать вручную не надо."""
     from app.core import notify
@@ -124,7 +141,8 @@ def stats(_argv: list[str]) -> None:
 
 COMMANDS = {"adduser": adduser, "passwd": passwd, "wallet-add": wallet_add,
             "wallet-list": wallet_list, "refresh": do_refresh, "stats": stats,
-            "notify-test": notify_test, "notify-chatid": notify_chatid}
+            "notify-test": notify_test, "notify-chatid": notify_chatid,
+            "digest": digest}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

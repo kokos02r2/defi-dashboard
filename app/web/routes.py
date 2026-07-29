@@ -20,6 +20,7 @@ from app.auth import (authenticate, current_user, note_failure, require_user,
 from app.core.btc import btc_price, chart_series as btc_chart, summarize as btc_summarize
 from app.core.chains import CHAINS
 from app.core.fees import annualized, collected, share_of_base
+from app.core.inrange import for_position as inrange_for, for_positions as inrange_many
 from app.core.lots import known_symbols, resolve_coin, summarize
 from app.core.market import market_rates
 from app.core.prices import PriceService
@@ -244,6 +245,10 @@ def position_detail(request: Request, pid: int, user: User = Depends(require_use
     return templates.TemplateResponse(request, "position.html", {
         "user": user, "pos": pos, "events": events, "chain": chain,
         "d": pos.detail or {},
+        # доля времени в диапазоне: за всё наблюдённое время и за последнюю неделю —
+        # вместе они показывают, стало ли лучше или хуже
+        "inrange_all": inrange_for(db, pid),
+        "inrange_week": inrange_for(db, pid, days=7),
     })
 
 
@@ -368,11 +373,25 @@ def fees_page(request: Request, wallet: str = "",
         apr_note = ("период короче двух недель — годовые из него получились бы случайным числом"
                     if apr is None else "")
 
+    # Время в диапазоне — только по активным позициям: у закрытой границы остались,
+    # но стоять в них уже нечему, и цифра была бы бессмысленной.
+    active_q = select(Position).where(Position.is_open.is_(True),
+                                     Position.protocol == "uniswap_v3")
+    if wallet_id:
+        active_q = active_q.where(Position.wallet_id == wallet_id)
+    active = list(db.scalars(active_q).all())
+    coverage = inrange_many(db, [p.id for p in active])
+    inrange_rows = sorted(
+        [(p, coverage[p.id]) for p in active if p.id in coverage and coverage[p.id].reliable],
+        key=lambda pair: pair[1].pct or 0, reverse=True)
+
     return templates.TemplateResponse(request, "fees.html", {
         "user": user, "status": get_status(), "rep": rep,
         "wallets": list(db.scalars(select(Wallet).order_by(Wallet.id)).all()),
         "wallet_id": wallet_id, "ranges": ranges,
         "base": base, "apr": apr, "apr_share": apr_share, "apr_note": apr_note,
+        "inrange_rows": inrange_rows,
+        "snapshot_minutes": max(round(config.SNAPSHOT_INTERVAL / 60), 1),
         "date_from": since.date().isoformat() if since else "",
         "date_to": until.date().isoformat() if until else "",
         "unclaimed": float(db.scalar(unclaimed_q) or 0.0),
