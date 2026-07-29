@@ -454,6 +454,16 @@ def partial_market(request: Request, user: User = Depends(require_user),
                                       {"rates": market_rates(db)})
 
 
+@router.get("/partials/status", response_class=HTMLResponse)
+def partial_status(request: Request, user: User = Depends(require_user)):
+    """Плашка «обновляется…» в шапке. Своим фрагментом, потому что htmx на
+    дашборде подменяет только блок позиций, а шапка в него не входит. Опрос чаще
+    цикла обновления: индикатор должен загораться и гаснуть заметно, иначе он
+    бесполезен."""
+    return templates.TemplateResponse(request, "partials/status.html",
+                                      {"status": get_status()})
+
+
 @router.get("/calc", response_class=HTMLResponse)
 def calc_page(request: Request, user: User = Depends(require_user)):
     """Калькулятор пула. Вся арифметика в браузере — состояния и запросов не нужно."""

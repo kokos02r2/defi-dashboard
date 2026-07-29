@@ -31,14 +31,11 @@
         hx-swap="innerHTML" aria-label="Курсы ETH и BTC"></span>
 
   <span class="spacer"></span>
-  {% if status is defined and status %}
-    <span class="status-dot {{ 'busy' if status.running }}" title="Последнее обновление">
-      <i></i>
-      {% if status.running %}обновляется…
-      {% elif status.last_live %}{{ status.last_live.started_at[11:16] }} UTC
-      {% else %}нет данных{% endif %}
-    </span>
-  {% endif %}
+  {# Плашка статуса, как и тикер, тянет себя сама — и поэтому больше не зависит
+     от того, передала ли страница переменную status: живёт на всех страницах,
+     где есть шапка, а не только на дашборде. #}
+  <span class="status-dot" hx-get="/partials/status" hx-trigger="load, every 15s"
+        hx-swap="outerHTML" title="Последнее обновление"><i></i>…</span>
   <form method="post" action="/refresh" style="display:inline">
     <input type="hidden" name="mode" value="live">
     <button class="btn" type="submit">Обновить</button>
