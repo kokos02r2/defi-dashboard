@@ -325,6 +325,33 @@ class TokenLot(Base):
         return (self.amount or 0) * (self.avg_price_usd or 0)
 
 
+class BtcBuy(Base):
+    """Покупка BTC со заклеймленных комиссий — просто журнал, отдельно от всего.
+
+    Этот BTC СОЗНАТЕЛЬНО не участвует ни в одном расчёте дашборда: ни в чистой
+    стоимости, ни в PnL, ни в сравнении с исходным вложением. Причина простая —
+    он куплен на уже полученные комиссии и лежит во Fluid как самостоятельный
+    актив; подмешав его в итоги портфеля, мы посчитали бы одни и те же деньги
+    дважды: сперва как комиссию, потом как купленный на неё биткоин.
+
+    Поэтому таблица не читается ни в jobs/refresh.py, ни в расчёте итогов —
+    только на своей странице. Если однажды понадобится включить её в общий счёт,
+    это будет отдельное осознанное решение, а не побочный эффект.
+    """
+    __tablename__ = "btc_buys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    amount_btc: Mapped[float] = mapped_column(Float, default=0.0)
+    price_usd: Mapped[float] = mapped_column(Float, default=0.0)   # цена за 1 BTC
+    bought_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    @property
+    def cost_usd(self) -> float:
+        return (self.amount_btc or 0) * (self.price_usd or 0)
+
+
 class KV(Base):
     """Служебное состояние: время последних прогонов, статус задач."""
     __tablename__ = "kv"

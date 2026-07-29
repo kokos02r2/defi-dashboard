@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block title %}Комиссии — DeFi Dashboard{% endblock %}
+{% set active = 'fees' %}
+
+{% block content %}
+<h1 class="page">Комиссии</h1>
+<div class="page-sub">
+  Сколько комиссий уже собрано и когда. Каждый сбор посчитан по цене токенов
+  <b>на момент сбора</b>, а не по сегодняшней: в мае собранный эфир стоил не столько,
+  сколько в декабре, и пересчёт по текущей цене гонял бы давно полученный доход
+  вверх-вниз вместе с рынком.
+</div>
+
+{# Один ряд фильтров над всем, что они задают — как на портфеле #}
+<div class="filters">
+  <form method="get" action="/fees">
+    <select name="wallet" onchange="this.form.submit()">
+      <option value="">Все кошельки</option>
+      {% for w in wallets %}
+        <option value="{{ w.id }}" {{ 'selected' if wallet_id == w.id }}>{{ w.title }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="from" value="{{ date_from }}">
+    <input type="hidden" name="to" value="{{ date_to }}">
+  </form>
+
+  <div class="seg" role="group" aria-label="Период">
+    {% for r in ranges %}
+      <a href="/fees?{% if wallet_id %}wallet={{ wallet_id }}&amp;{% endif %}from={{ r['from'] }}"
+         aria-pressed="{{ 'true' if r.active else 'false' }}">{{ r.label }}</a>
+    {% endfor %}
+  </div>
+
+  <span class="spacer" style="flex:1"></span>
+
+  <form method="get" action="/fees" title="Свой диапазон">
+    {% if wallet_id %}<input type="hidden" name="wallet" value="{{ wallet_id }}">{% endif %}
+    <input type="date" name="from" value="{{ date_from }}" aria-label="С даты">
+    <span class="meta" style="color:var(--ink-muted)">—</span>
+    <input type="date" name="to" value="{{ date_to }}" aria-label="По дату">
+    <button class="btn" type="submit">Показать</button>
+  </form>
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Собрано за период</div>
+    <div class="value">{{ rep.total | usd_short }}</div>
+    <div class="sub">
+      {% if rep.events %}
+        {{ rep.events }} {{ rep.events | plural('сбор', 'сбора', 'сборов') }}
+        {% if rep.first %}· с {{ rep.first.strftime('%d.%m.%Y') }}{% endif %}
+      {% else %}сборов в этом периоде не было{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">В среднем за месяц</div>
+    <div class="value">{{ rep.per_month | usd_short }}</div>
+    <div class="sub">
+      {% if rep.buckets %}по {{ rep.buckets | length }} месяцам, включая пустые{% else %}—{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Лучший месяц</div>
+    <div class="value sm">{{ rep.best.usd | usd_short if rep.best else '—' }}</div>
+    <div class="sub">{{ rep.best.label if rep.best else 'нет данных' }}</div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Несобранные сейчас</div>
+    <div class="value sm">{{ unclaimed | usd_short }}</div>
+    <div class="sub">лежат в пулах, ещё не забраны</div>
+  </div>
+
+  {# Годовые от суммы, введённой в Настройках. Отдельной плиткой, а не в подписи:
+     это ответ на вопрос «сколько приносят комиссии», за которым сюда и приходят.
+     `is defined` не для красоты: Undefined проходит проверку `is not none`, и без
+     него шаблон, отрендеренный без этой переменной, ронял страницу целиком. #}
+  <div class="tile">
+    <div class="label">Годовые на комиссиях</div>
+    <div class="value sm">{{ apr | pct(2) if apr is defined and apr is not none else 'н/д' }}</div>
+    <div class="sub">
+      {% if apr is defined and apr is not none %}
+        от вложенных {{ base | usd_short }} · за {{ rep.span_days | round | int }} дн.
+      {% else %}
+        {{ apr_note }}{% if not base and not wallet_id %} — <a href="/settings">задать</a>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  {% if apr_share is defined and apr_share is not none %}
+  <div class="tile">
+    <div class="label">Комиссии к вложению</div>
+    <div class="value sm">{{ apr_share | pct(1) }}</div>
+    <div class="sub">собрано за период от вложенных {{ base | usd_short }}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if apr is defined and apr is not none %}
+<div class="note" style="margin:-6px 0 16px">
+  Годовые считаются просто: собранные комиссии делятся на исходное вложение и
+  приводятся к году по длине периода. Тут два допущения, о которых стоит помнить.
+  Первое: считается, что вся сумма стояла в позициях весь период — если вы заводили
+  деньги частями, реальная доходность выше показанной. Второе: период отсчитывается
+  от первого сбора комиссий, а конец — сегодня, а не последний сбор, поэтому месяцы
+  простоя доходность честно снижают. Временно заведённые суммы в базу не входят.
+</div>
+{% endif %}
+
+{% if rep.skipped %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    <b>{{ rep.skipped }}</b> {{ rep.skipped | plural('сбор', 'сбора', 'сборов') }}
+    не {{ rep.skipped | plural('попал', 'попали', 'попали') }} в суммы: для них неизвестна
+    цена токенов на момент сбора — источник исторических котировок её не отдал. Значит
+    настоящий итог немного выше показанного. Пересчитать по нынешней цене было бы неверно:
+    это дало бы другую величину, а не пропущенную.
+  </span>
+</div>
+{% endif %}
+
+<div class="card chart-card">
+  <div class="chart-head">
+    <h2>Собрано по месяцам</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      {% if rep.buckets %}{{ rep.buckets | length }} мес.{% endif %}
+    </span>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--series-1)"></i>За месяц</span>
+    <span><i style="background:var(--series-2)"></i>Накопительно</span>
+  </div>
+  <div class="chart-box"><canvas id="fees-chart"></canvas></div>
+  {% if not rep.buckets %}
+  <div class="empty">
+    В этом периоде сборов нет. Попробуйте «всё время» — или запустите полную
+    синхронизацию, если история ещё не собиралась.
+  </div>
+  {% endif %}
+</div>
+
+{% if rep.pools %}
+<div class="card" style="margin-top:16px">
+  <h2>По пулам</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Позиция</th><th>Сеть</th>
+          <th class="num">Собрано</th><th class="num">Доля</th>
+          <th class="num">Сборов</th><th>Первый</th><th>Последний</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in rep.pools %}
+        <tr>
+          <td>
+            <div class="name"><a href="/position/{{ p.position_id }}">{{ p.title }}</a></div>
+            {# в одном пуле бывает несколько позиций — без номера строки читаются как дубли #}
+            <div class="meta">
+              {%- if p.subtitle %}{{ p.subtitle }} · {% endif -%}
+              #{{ p.external_id }}
+            </div>
+          </td>
+          <td class="meta">{{ p.chain }}</td>
+          <td class="num">{{ p.usd | usd }}</td>
+          <td class="num">{{ (p.usd / rep.total * 100) | pct(1) if rep.total else '—' }}</td>
+          <td class="num">{{ p.events }}</td>
+          <td class="meta">{{ p.first.strftime('%d.%m.%Y') if p.first else '—' }}</td>
+          <td class="meta">{{ p.last.strftime('%d.%m.%Y') if p.last else '—' }}</td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td colspan="2"><b>Итого</b></td>
+          <td class="num"><b>{{ rep.total | usd }}</b></td>
+          <td class="num"><b>100%</b></td>
+          <td class="num"><b>{{ rep.events }}</b></td>
+          <td colspan="2"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>По месяцам</h2>
+  <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+    <table class="events">
+      <thead>
+        <tr><th>Месяц</th><th class="num">Собрано</th><th class="num">Сборов</th>
+            <th class="num">Накопительно</th></tr>
+      </thead>
+      <tbody>
+        {# от новых к старым: свежий месяц интересует чаще, чем позапрошлогодний #}
+        {% for b in rep.buckets | reverse %}
+        <tr>
+          <td>{{ b.label }}</td>
+          <td class="num">{{ b.usd | usd if b.events else '—' }}</td>
+          <td class="num">{{ b.events or '—' }}</td>
+          <td class="num">{{ b.cumulative | usd }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+const FEES = {{ chart | tojson }};
+let feesChart = null;
+
+function drawFees() {
+  if (!FEES.labels.length) return;
+  const bar = ChartKit.css("--series-1"), line = ChartKit.css("--series-2");
+
+  // Ось для накопительной кривой своя, справа: рядом с месячными столбиками в
+  // тысячах она иначе прижмёт их к нулю и месяцы станет не различить.
+  const opts = ChartKit.options(FEES.usd.concat(FEES.cumulative), c => {
+    const i = c.dataIndex;
+    if (c.dataset.yAxisID === "y1") return " Накопительно: " + ChartKit.usd(c.parsed.y);
+    return " За месяц: " + ChartKit.usd(c.parsed.y) +
+           " (" + FEES.events[i] + (FEES.events[i] === 1 ? " сбор" : " сборов") + ")";
+  });
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(FEES.usd);
+  opts.scales.y1 = {
+    position: "right",
+    grid: {display: false},
+    border: {display: false},
+    ticks: {color: ChartKit.css("--ink-muted"), font: {size: 11}, padding: 8,
+            callback: ChartKit.tickFormatter(FEES.cumulative)},
+  };
+
+  if (feesChart) feesChart.destroy();
+  feesChart = new Chart(document.getElementById("fees-chart"), {
+    data: {
+      labels: FEES.labels,
+      datasets: [
+        {type: "bar", label: "За месяц", data: FEES.usd, yAxisID: "y",
+         backgroundColor: bar, borderRadius: 3, maxBarThickness: 46},
+        {type: "line", label: "Накопительно", data: FEES.cumulative, yAxisID: "y1",
+         borderColor: line, borderWidth: 2, tension: .25,
+         pointRadius: 0, pointHoverRadius: 4, fill: false},
+      ],
+    },
+    options: opts,
+  });
+}
+
+document.addEventListener("themechange", drawFees);   // цвета берутся из CSS-переменных
+drawFees();
+</script>
+{% endblock %}

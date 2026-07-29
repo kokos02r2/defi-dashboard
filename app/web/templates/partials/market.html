@@ -3,10 +3,17 @@
   {% for r in rates %}
     <span class="rate">
       <b>{{ r.symbol }}</b>
-      <span class="px">${{ '{:,.0f}'.format(r.price).replace(',', ' ') if r.price >= 100 else '%.2f' % r.price }}</span>
+      {# У валютной пары знака доллара быть не должно: «$78.70» для USD/RUB читалось
+         бы как цена в долларах. Мелкие значения — с четырьмя знаками: у EUR/USD вся
+         динамика в третьем-четвёртом. #}
+      {% if r.kind == 'fx' %}
+        <span class="px">{{ '%.2f' % r.price if r.price >= 10 else '%.4f' % r.price }}</span>
+      {% else %}
+        <span class="px">${{ '{:,.0f}'.format(r.price).replace(',', ' ') if r.price >= 100 else '%.2f' % r.price }}</span>
+      {% endif %}
       {% if r.change_24h is not none %}
         <span class="chg {{ 'up' if r.change_24h > 0 else ('down' if r.change_24h < 0 else 'flat') }}"
-              title="Изменение за 24 часа">
+              title="{{ r.change_title or 'Изменение за 24 часа' }}">
           {{ '▲' if r.change_24h > 0 else ('▼' if r.change_24h < 0 else '·') }}{{ '%.2f' % (r.change_24h | abs) }}%
         </span>
       {% endif %}

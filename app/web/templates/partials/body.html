@@ -65,13 +65,17 @@
     </div>
   </div>
 
-  <div class="tile">
-    <div class="label">Несобранные комиссии</div>
+  {# Единственная плитка-ссылка: за ней есть отдельная история, в отличие от
+     остальных, где вся правда уже на самой плитке. Фильтр по кошельку переносим,
+     иначе цифры на двух страницах разошлись бы. #}
+  <a class="tile tile-link" href="/fees{% if wallet_id %}?wallet={{ wallet_id }}{% endif %}"
+     title="Открыть историю собранных комиссий">
+    <div class="label">Несобранные комиссии <span class="go">→</span></div>
     <div class="value">{{ totals.fees_unclaimed | usd_short }}</div>
     <div class="sub">
       {% if totals.fees_claimed %}заклеймлено за всё время {{ totals.fees_claimed | usd_short }}{% else %}по активным позициям{% endif %}
     </div>
-  </div>
+  </a>
 
   <div class="tile">
     <div class="label">PnL с комиссиями</div>

@@ -111,7 +111,9 @@ header.top .spacer { flex: 1; }
 
 /* Тикер ETH/BTC. min-height держит высоту шапки до подгрузки, чтобы не дёргалась */
 .ticker {
-  display: inline-flex; align-items: center; gap: 14px;
+  display: inline-flex; align-items: center;
+  /* пять пар в строке: на узком экране переносим, а не выдавливаем шапку */
+  flex-wrap: wrap; gap: 4px 14px;
   margin-left: 6px; padding-left: 14px; min-height: 20px;
   border-left: 1px solid var(--hairline);
 }
@@ -159,19 +161,24 @@ header.top .spacer { flex: 1; }
   margin-bottom: 16px;
 }
 .filters form { display: inline-flex; gap: 8px; align-items: center; }
-select, input[type="text"], input[type="password"] {
+select, input[type="text"], input[type="password"], input[type="date"] {
   font: inherit; font-size: 13px; padding: 6px 10px;
   border: 1px solid var(--hairline); border-radius: 8px;
   background: var(--surface); color: var(--ink);
 }
 
 .seg { display: inline-flex; border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; }
-.seg button {
+/* Кнопки — там, где период меняется на месте; ссылки — где он часть адреса,
+   чтобы период можно было положить в закладки и переслать себе же. */
+.seg button, .seg a {
   font: inherit; font-size: 12.5px; padding: 5px 11px;
   border: 0; background: var(--surface); color: var(--ink-2); cursor: pointer;
 }
-.seg button + button { border-left: 1px solid var(--hairline); }
-.seg button[aria-pressed="true"] { background: var(--surface-sunken); color: var(--ink); font-weight: 560; }
+.seg a { text-decoration: none; display: inline-flex; align-items: center; }
+.seg button + button, .seg a + a { border-left: 1px solid var(--hairline); }
+.seg button[aria-pressed="true"], .seg a[aria-pressed="true"] {
+  background: var(--surface-sunken); color: var(--ink); font-weight: 560;
+}
 
 /* ---------------------------------------------------------------- карточки */
 
@@ -212,6 +219,13 @@ select, input[type="text"], input[type="password"] {
 .tile .value.up { color: var(--good-text); }
 .tile .value.down { color: var(--critical); }
 .tile .sub { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
+
+/* Плитка-ссылка. Выглядит ровно как остальные — подчёркивания и синевы тут не надо,
+   про переход говорит стрелка, которая проявляется под курсором. */
+a.tile-link { display: block; color: inherit; text-decoration: none; transition: border-color .12s; }
+a.tile-link:hover { border-color: var(--ink-muted); }
+a.tile-link .go { color: var(--ink-muted); opacity: 0; transition: opacity .12s; }
+a.tile-link:hover .go, a.tile-link:focus-visible .go { opacity: 1; }
 
 .delta { font-size: 13px; font-weight: 560; }
 .delta.up { color: var(--good-text); }
@@ -254,6 +268,8 @@ table.positions td {
 }
 table.positions tbody tr:last-child td { border-bottom: 0; }
 table.positions tbody tr:hover { background: var(--surface-sunken); }
+/* строка, которую правят: форма наверху, и без подсветки не видно, о чём она */
+table.positions tbody tr.editing > td { background: var(--surface-sunken); }
 table.positions td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.positions .name { font-weight: 560; }
 table.positions .meta { font-size: 12px; color: var(--ink-muted); }

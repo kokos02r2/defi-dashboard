@@ -217,7 +217,19 @@ def _check_alerts(db: Session, pos: Position, prev_in_range, prev_health, create
     if created:
         return
 
-    if config.ALERT_OUT_OF_RANGE and prev_in_range is not None and pos.in_range is not None:
+    # По закрытой позиции алертов быть не должно.
+    #
+    # in_range у Uniswap считается из тиков и текущей цены и НЕ смотрит на
+    # ликвидность (см. _Pos.in_range): у позиции с нулевой ликвидностью границы
+    # диапазона остаются на месте, цена продолжает через них ходить, и дашборд
+    # исправно сообщает «вышла из диапазона» про то, из чего деньги давно выведены.
+    #
+    # Ликвидация — единственное исключение ниже: она сама закрывает позицию, и
+    # промолчать про неё из-за этой же проверки было бы худшим из возможных исходов.
+    active = bool(pos.is_open)
+
+    if (active and config.ALERT_OUT_OF_RANGE
+            and prev_in_range is not None and pos.in_range is not None):
         if prev_in_range and not pos.in_range:
             _add_alert(db, pos, "out_of_range", "warning",
                        f"{pos.title} ({pos.chain}) вышла из диапазона — "
@@ -227,7 +239,7 @@ def _check_alerts(db: Session, pos: Position, prev_in_range, prev_health, create
                        f"{pos.title} ({pos.chain}) вернулась в диапазон", cooldown=True)
 
     thr = config.ALERT_HEALTH_FACTOR
-    if pos.health_factor is not None:
+    if active and pos.health_factor is not None:
         crossed_down = (prev_health is None or prev_health >= thr) and pos.health_factor < thr
         if crossed_down:
             msg = (f"{pos.title} ({pos.chain}): health factor "

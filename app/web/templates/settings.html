@@ -46,20 +46,29 @@
 </div>
 
 <div class="card" style="margin-top:16px" id="temp">
-  <h2>Временно заведённые суммы</h2>
+  <h2>{{ 'Изменить сумму' if editing_temp else 'Временно заведённые суммы' }}</h2>
   <div class="body">
-    <form method="post" action="/settings/temp/add"
+    {# Одна форма на два режима, как на странице партий: edit=ID в адресе решает,
+       куда она отправится. Дата не правится — это когда запись создана. #}
+    <form method="post"
+          action="{{ ('/settings/temp/%d/edit' % editing_temp.id) if editing_temp else '/settings/temp/add' }}"
           style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
       <label>
         <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Сумма, $</span>
-        <input type="text" name="amount" placeholder="5000" style="min-width:150px" required>
+        <input type="text" name="amount" placeholder="5000" style="min-width:150px" required
+               value="{{ temp_prefill.amount }}">
       </label>
       <label style="flex:1;min-width:240px">
         <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Описание</span>
-        <input type="text" name="note" style="width:100%"
+        <input type="text" name="note" style="width:100%" value="{{ temp_prefill.note }}"
                placeholder="долив залога в Fluid ради health factor">
       </label>
-      <button class="btn primary" type="submit" title="Добавить сумму">＋ Добавить</button>
+      {% if editing_temp %}
+        <button class="btn primary" type="submit">Сохранить</button>
+        <a class="btn ghost" href="/settings#temp">Отмена</a>
+      {% else %}
+        <button class="btn primary" type="submit" title="Добавить сумму">＋ Добавить</button>
+      {% endif %}
     </form>
 
     {% if temps %}
@@ -70,11 +79,12 @@
         </thead>
         <tbody>
           {% for t in temps %}
-          <tr>
+          <tr {{ 'class=editing' if editing_temp and editing_temp.id == t.id }}>
             <td class="meta">{{ t.created_at | ts_short }}</td>
             <td>{{ t.note or '—' }}</td>
             <td class="num">{{ t.amount_usd | usd }}</td>
-            <td style="text-align:right">
+            <td style="text-align:right;white-space:nowrap">
+              <a class="btn ghost" href="/settings?edit={{ t.id }}#temp" title="Изменить">✎</a>
               <form method="post" action="/settings/temp/{{ t.id }}/delete" style="display:inline"
                     onsubmit="return confirm('Убрать эту сумму? Это значит, что деньги вернулись — сравнение с входом пересчитается.')">
                 <button class="btn ghost danger" type="submit" title="Деньги вернулись">✕</button>
@@ -101,6 +111,8 @@
     </div>
     <div class="note">
       Забрали деньги обратно — нажмите ✕, и сравнение вернётся к прежней базе.
+      Ошиблись в сумме или описании — ✎ правит запись, дата создания при этом
+      сохраняется: по ней видно, что и когда доливалось.
     </div>
   </div>
 </div>

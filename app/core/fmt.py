@@ -7,9 +7,20 @@ from decimal import Decimal
 
 
 def _d(v) -> Decimal | None:
+    """Всё, что не превращается в число, — это «нет данных», а не падение страницы.
+
+    Здесь важна именно терпимость: сюда попадает и Undefined от Jinja, если шаблон
+    ждёт переменную, которой роут не передал. Раньше такой случай ронял весь ответ
+    в 500 — из-за одной несуществующей цифры пропадала вся страница.
+    """
     if v is None:
         return None
-    return v if isinstance(v, Decimal) else Decimal(str(v))
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
 
 
 def amt(raw, decimals: int, digits: int = 6) -> str:
@@ -104,6 +115,20 @@ def ts_short(v) -> str:
     return datetime.fromtimestamp(v, timezone.utc).strftime("%d.%m %H:%M")
 
 
+def plural(n, one: str, few: str, many: str) -> str:
+    """Русское согласование числительных: 1 сбор, 2 сбора, 5 сборов.
+
+    В шаблоне то же самое выражением получается нечитаемым, а «5 сбора» в интерфейсе
+    выглядит как недоделка.
+    """
+    n = abs(int(n or 0))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def days_since(v) -> str:
     if not v:
         return "—"
@@ -114,5 +139,5 @@ def days_since(v) -> str:
 FILTERS = {
     "amt": amt, "usd": usd, "usd_short": usd_short, "price": price,
     "usd_price": usd_price, "pct": pct, "ts": ts, "ts_short": ts_short,
-    "days_since": days_since,
+    "days_since": days_since, "plural": plural,
 }

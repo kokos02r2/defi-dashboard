@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}BTC — DeFi Dashboard{% endblock %}
+{% set active = 'btc' %}
+
+{% block content %}
+<h1 class="page">Покупки BTC</h1>
+<div class="page-sub">
+  Журнал покупок биткоина с заклеймленных комиссий. Считается только здесь: в чистую
+  стоимость, PnL и сравнение с исходным вложением этот BTC <b>не входит</b> — комиссии
+  в них уже учтены, и купленный на них биткоин попал бы туда теми же деньгами второй раз.
+</div>
+
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if s.rows %}
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Всего BTC</div>
+    <div class="value">{{ '%.8f' % s.total_btc }}</div>
+    <div class="sub">
+      {{ s.rows | length }} {{ s.rows | length | plural('покупка', 'покупки', 'покупок') }}
+      {% if s.first %}· с {{ s.first.strftime('%d.%m.%Y') }}{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Средняя цена</div>
+    <div class="value">${{ s.avg_price | usd_price }}</div>
+    <div class="sub">
+      вложено {{ s.total_cost | usd_short }}
+      {% if s.best_price %}· лучшая ${{ s.best_price | usd_price }}{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Стоимость сейчас</div>
+    <div class="value">{{ s.value_now | usd_short if s.value_now is not none else 'н/д' }}</div>
+    <div class="sub">
+      {% if s.price_now %}курс ${{ s.price_now | usd_price }}{% else %}курс BTC недоступен{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Разница</div>
+    {% if s.pnl is not none %}
+    <div class="value sm {{ 'up' if s.pnl > 0 else ('down' if s.pnl < 0 else '') }}">
+      {{ '▲' if s.pnl > 0 else ('▼' if s.pnl < 0 else '·') }} {{ s.pnl | abs | usd_short }}
+    </div>
+    <div class="sub">{{ s.pnl_pct | pct(1, true) if s.pnl_pct is not none else '' }} к вложенному</div>
+    {% else %}
+    <div class="value sm">н/д</div>
+    <div class="sub">нужен курс BTC</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# Одна форма на два режима: edit=ID в адресе решает, куда она отправится #}
+<div class="card" id="btc-form" style="margin-bottom:16px">
+  <h2>{{ 'Изменить покупку' if editing else 'Записать покупку' }}</h2>
+  <div class="body">
+    <form method="post" action="{{ ('/btc/%d/edit' % editing.id) if editing else '/btc/add' }}"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Количество BTC</span>
+        <input type="text" name="amount" style="width:160px" required
+               value="{{ prefill.amount }}" placeholder="0.01532">
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Цена за 1 BTC, $</span>
+        <input type="text" name="price" style="width:160px" required
+               value="{{ prefill.price }}" placeholder="64000">
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Когда</span>
+        <input type="date" name="bought" style="width:150px" value="{{ prefill.bought }}">
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Заметка</span>
+        <input type="text" name="note" style="width:100%" value="{{ prefill.note }}"
+               placeholder="с комиссий за июнь, завёл во Fluid">
+      </label>
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Записать' }}</button>
+      {% if editing %}<a class="btn ghost" href="/btc">Отмена</a>{% endif %}
+    </form>
+    <div class="note">
+      Средняя цена считается как деньги, поделённые на количество, а не как среднее из
+      цен покупок: иначе мелкая сделка по неудачному курсу весила бы столько же,
+      сколько крупная по удачному.
+    </div>
+  </div>
+</div>
+
+{% if s.rows %}
+<div class="card chart-card">
+  <div class="chart-head">
+    <h2>Как набирался BTC</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      {{ s.rows | length }} {{ s.rows | length | plural('покупка', 'покупки', 'покупок') }}
+    </span>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--series-1)"></i>Куплено BTC</span>
+    <span><i style="background:var(--series-2)"></i>Цена покупки</span>
+    <span><i style="background:var(--series-3)"></i>Средняя набора</span>
+    {% if s.price_now %}<span><i style="background:var(--ink-muted)"></i>Курс сейчас</span>{% endif %}
+  </div>
+  <div class="chart-box"><canvas id="btc-chart"></canvas></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Покупки</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Когда</th><th>Заметка</th>
+          <th class="num">Куплено</th><th class="num">Цена</th><th class="num">Потрачено</th>
+          <th class="num">Доля</th><th class="num">Накоплено</th><th class="num">Средняя после</th>
+          <th class="num">К средней</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {# от новых к старым: свежая покупка интересует чаще #}
+        {% for r in s.rows | reverse %}
+        <tr {{ 'class=editing' if editing and editing.id == r.buy.id }}>
+          <td class="meta">{{ (r.buy.bought_at or r.buy.created_at) | ts_short }}</td>
+          <td>{{ r.buy.note or '—' }}</td>
+          <td class="num">{{ '%.8f' % r.buy.amount_btc }}</td>
+          <td class="num">${{ r.buy.price_usd | usd_price }}</td>
+          <td class="num">{{ r.buy.cost_usd | usd }}</td>
+          <td class="num">{{ r.share | pct(1) }}</td>
+          <td class="num">{{ '%.8f' % r.cumulative_btc }}</td>
+          <td class="num">${{ r.avg_after | usd_price }}</td>
+          <td class="num">
+            {# дешевле своей средней — это удачная покупка, и её видно сразу #}
+            {% set diff = (r.buy.price_usd / s.avg_price - 1) * 100 if s.avg_price else none %}
+            {% if diff is not none %}
+              <span class="{{ 'status ok' if diff < 0 else ('status bad' if diff > 0 else '') }}">
+                {{ diff | pct(1, true) }}
+              </span>
+            {% else %}—{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn ghost" href="/btc?edit={{ r.buy.id }}#btc-form" title="Изменить">✎</a>
+            <form method="post" action="/btc/{{ r.buy.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить запись о покупке {{ '%.8f' % r.buy.amount_btc }} BTC? Журнал потеряет её навсегда.')">
+              <button class="btn ghost danger" type="submit" title="Удалить запись">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td colspan="2"><b>Итого</b></td>
+          <td class="num"><b>{{ '%.8f' % s.total_btc }}</b></td>
+          <td class="num"><b>${{ s.avg_price | usd_price }}</b></td>
+          <td class="num"><b>{{ s.total_cost | usd }}</b></td>
+          <td class="num"><b>100%</b></td>
+          <td colspan="4"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    Покупок пока нет.<br>
+    Записывайте здесь каждую покупку BTC с комиссий — форма выше.
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+const BTC = {{ chart | tojson }};
+let btcChart = null;
+
+function drawBtc() {
+  if (!BTC.labels || !BTC.labels.length) return;
+  const c1 = ChartKit.css("--series-1"), c2 = ChartKit.css("--series-2"),
+        c3 = ChartKit.css("--series-3"), muted = ChartKit.css("--ink-muted");
+
+  // Две оси: количество BTC измеряется в сотых долях монеты, цена — в десятках
+  // тысяч долларов. На одной оси столбики просто исчезли бы.
+  const prices = BTC.price.concat(BTC.avg).concat(BTC.price_now ? [BTC.price_now] : []);
+  const opts = ChartKit.options(prices, c => {
+    const i = c.dataIndex;
+    if (c.dataset.label === "Куплено BTC") {
+      const note = BTC.notes[i] ? " · " + BTC.notes[i] : "";
+      return " Куплено: " + BTC.amount[i].toFixed(8) + " BTC" + note;
+    }
+    return " " + c.dataset.label + ": " + ChartKit.usd(c.parsed.y);
+  });
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(prices);
+  opts.scales.y1 = {
+    position: "right", grid: {display: false}, border: {display: false},
+    ticks: {color: muted, font: {size: 11}, padding: 8,
+            callback: v => v.toFixed(3) + " ₿"},
+  };
+
+  const datasets = [
+    {type: "bar", label: "Куплено BTC", data: BTC.amount, yAxisID: "y1",
+     backgroundColor: c1, borderRadius: 3, maxBarThickness: 38, order: 3},
+    {type: "line", label: "Цена покупки", data: BTC.price, yAxisID: "y",
+     borderColor: c2, borderWidth: 0, showLine: false,
+     pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: c2, order: 1},
+    {type: "line", label: "Средняя набора", data: BTC.avg, yAxisID: "y",
+     borderColor: c3, borderWidth: 2, tension: .25, pointRadius: 0,
+     pointHoverRadius: 4, fill: false, order: 2},
+  ];
+  if (BTC.price_now) {
+    // курс сейчас — ровной линией: сразу видно, какие покупки оказались удачными
+    datasets.push({type: "line", label: "Курс сейчас", yAxisID: "y",
+                   data: BTC.labels.map(() => BTC.price_now),
+                   borderColor: muted, borderWidth: 1, borderDash: [4, 4],
+                   pointRadius: 0, pointHoverRadius: 0, fill: false, order: 4});
+  }
+
+  if (btcChart) btcChart.destroy();
+  btcChart = new Chart(document.getElementById("btc-chart"),
+                       {data: {labels: BTC.labels, datasets: datasets}, options: opts});
+}
+
+document.addEventListener("themechange", drawBtc);   // цвета берутся из CSS-переменных
+drawBtc();
+</script>
+{% endblock %}

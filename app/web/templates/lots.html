@@ -36,10 +36,15 @@
 </div>
 {% endif %}
 
-<div class="card" style="margin-bottom:16px">
-  <h2>Добавить партию</h2>
+{# Одна форма на два режима: поля у добавления и у правки одни и те же, а edit=ID
+   в адресе решает, куда она отправится. Отдельная страница правки только
+   размножала бы эту разметку. Якорь #lot-form — чтобы по ✎ страница сразу
+   прокрутилась к форме, а не оставила человека смотреть на таблицу. #}
+<div class="card" id="lot-form" style="margin-bottom:16px">
+  <h2>{{ 'Изменить партию' if editing else 'Добавить партию' }}</h2>
   <div class="body">
-    <form method="post" action="/lots/add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+    <form method="post" action="{{ ('/lots/%d/edit' % editing.id) if editing else '/lots/add' }}"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
       <label>
         <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Актив</span>
         <input type="text" name="symbol" list="symbols" style="width:110px" required
@@ -58,7 +63,7 @@
       </label>
       <label>
         <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Когда</span>
-        <input type="date" name="acquired" style="width:150px">
+        <input type="date" name="acquired" style="width:150px" value="{{ prefill.acquired }}">
       </label>
       <label style="flex:1;min-width:200px">
         <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Заметка</span>
@@ -66,12 +71,21 @@
                placeholder="вышла вниз позиция WETH/USDC 0.05%">
       </label>
       <input type="hidden" name="source" value="{{ prefill.source or '' }}">
-      <button class="btn primary" type="submit">＋ Добавить</button>
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Добавить' }}</button>
+      {% if editing %}<a class="btn ghost" href="/lots">Отмена</a>{% endif %}
     </form>
+    {% if editing %}
+    <div class="note">
+      Правится только то, что вы вводили руками. Связь с исходной позицией
+      сохраняется, «Вложено» и «Разница» пересчитаются сами.
+      Дату можно очистить — тогда в таблице будет прочерк.
+    </div>
+    {% else %}
     <div class="note">
       Среднюю цену не нужно считать вручную: откройте позицию Uniswap, там есть блок
       «Средняя цена набора» и ссылка, которая заполнит эту форму сама.
     </div>
+    {% endif %}
   </div>
 </div>
 
@@ -89,7 +103,7 @@
     </thead>
     <tbody>
       {% for r in rows %}
-      <tr>
+      <tr {{ 'class=editing' if editing and editing.id == r.lot.id }}>
         <td class="name">{{ r.lot.symbol }}</td>
         <td class="meta">{{ r.lot.acquired_at | ts_short }}</td>
         <td>
@@ -113,7 +127,8 @@
             <div class="meta">{{ r.pnl_pct | pct(1, true) }}</div>
           {% else %}—{% endif %}
         </td>
-        <td style="text-align:right">
+        <td style="text-align:right;white-space:nowrap">
+          <a class="btn ghost" href="/lots?edit={{ r.lot.id }}#lot-form" title="Изменить">✎</a>
           <form method="post" action="/lots/{{ r.lot.id }}/delete" style="display:inline"
                 onsubmit="return confirm('Убрать партию? Так помечают, что актив продан.')">
             <button class="btn ghost danger" type="submit" title="Продано">✕</button>

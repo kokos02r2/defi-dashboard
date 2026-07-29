@@ -17,13 +17,15 @@ from sqlalchemy.orm import Session
 from app import config
 from app.auth import (authenticate, current_user, note_failure, require_user,
                       require_user_api, reset_attempts, throttled)
+from app.core.btc import btc_price, chart_series as btc_chart, summarize as btc_summarize
 from app.core.chains import CHAINS
+from app.core.fees import annualized, collected, share_of_base
 from app.core.lots import known_symbols, resolve_coin, summarize
 from app.core.market import market_rates
 from app.core.prices import PriceService
 from app.db.base import get_session
-from app.db.prefs import get_prefs, parse_money, save_prefs
-from app.db.models import (Alert, Position, PositionEvent, PositionSnapshot, Snapshot,
+from app.db.prefs import get_prefs, parse_amount, parse_money, save_prefs
+from app.db.models import (Alert, BtcBuy, Position, PositionEvent, PositionSnapshot, Snapshot,
                            TempDeposit, TokenLot, User, Wallet)  # noqa: F401 — Alert нужен для статуса доставки
 from app.jobs import scheduler
 from app.jobs.refresh import add_wallet, get_status
@@ -159,6 +161,17 @@ def _qs_flag(v: str | None) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _form_num(v: float | None) -> str:
+    """Число в поле формы: без хвостовых нулей и без экспоненты.
+
+    Иначе количество 8.3009 вернулось бы в поле как 8.30090000, и при каждой
+    правке в базе оседал бы всё более длинный мусор.
+    """
+    if not v:
+        return ""
+    return f"{v:.8f}".rstrip("0").rstrip(".")
+
+
 def _temp_total(db: Session) -> float:
     return float(db.scalar(select(func.coalesce(func.sum(TempDeposit.amount_usd), 0.0))) or 0.0)
 
@@ -276,6 +289,101 @@ def chart(days: int = Query(30, ge=1, le=3650), wallet: str | None = None,
 
 
 # --------------------------------------------------------------------------------------
+# Собранные комиссии
+# --------------------------------------------------------------------------------------
+
+def _qs_date(v: str, end_of_day: bool = False) -> datetime | None:
+    """Дата из строки запроса. Мусор трактуем как «не задано», чтобы ссылка из
+    закладок не отвечала 422."""
+    if not v or not v.strip():
+        return None
+    try:
+        d = datetime.fromisoformat(v.strip())
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    # «по 30 июня» человек понимает как «включая 30 июня», а не «до его начала»
+    if end_of_day and (d.hour, d.minute, d.second) == (0, 0, 0):
+        d = d.replace(hour=23, minute=59, second=59)
+    return d
+
+
+def _month_start(dt: datetime, back: int = 0) -> datetime:
+    year, month = dt.year, dt.month - back
+    while month <= 0:
+        year, month = year - 1, month + 12
+    return datetime(year, month, 1, tzinfo=timezone.utc)
+
+
+@router.get("/fees", response_class=HTMLResponse)
+def fees_page(request: Request, wallet: str = "",
+              date_from: str = Query("", alias="from"),
+              date_to: str = Query("", alias="to"),
+              user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Собранные комиссии по месяцам. Страница, на которую ведёт плитка комиссий.
+
+    Данные для графика уходят в шаблон прямо в разметке, без отдельного /api:
+    период меняется перезагрузкой страницы, и второй маршрут ради тех же чисел
+    только раздваивал бы логику.
+    """
+    wallet_id = _qs_int(wallet)
+    since = _qs_date(date_from)
+    until = _qs_date(date_to, end_of_day=True)
+    rep = collected(db, since, until, wallet_id)
+
+    now = datetime.now(timezone.utc)
+    presets = [
+        ("6 месяцев", _month_start(now, 5)),
+        ("12 месяцев", _month_start(now, 11)),
+        ("этот год", datetime(now.year, 1, 1, tzinfo=timezone.utc)),
+        ("всё время", None),
+    ]
+    current = since.date().isoformat() if since else ""
+    ranges = [{"label": label,
+               "from": start.date().isoformat() if start else "",
+               "active": (start.date().isoformat() if start else "") == current and not until}
+              for label, start in presets]
+
+    unclaimed_q = (select(func.coalesce(func.sum(Position.fees_unclaimed_usd), 0.0))
+                   .where(Position.is_open.is_(True)))
+    if wallet_id:
+        unclaimed_q = unclaimed_q.where(Position.wallet_id == wallet_id)
+
+    # Годовые считаем от исходного вложения из настроек. Оно задано на весь портфель
+    # одной суммой, поэтому при фильтре по кошельку делить на него нечестно: получилась
+    # бы доходность части денег, отнесённая ко всей сумме.
+    base = get_prefs(db).get("initial_deposit_usd")
+    if wallet_id:
+        apr = apr_share = None
+        apr_note = "исходное вложение задано на весь портфель, не на отдельный кошелёк"
+    elif not base:
+        apr = apr_share = None
+        apr_note = "задайте исходное вложение в Настройках"
+    elif rep.total <= 0:
+        apr = apr_share = None
+        apr_note = "в этом периоде комиссий не собрано"
+    else:
+        apr, apr_share = annualized(rep, base), share_of_base(rep, base)
+        apr_note = ("период короче двух недель — годовые из него получились бы случайным числом"
+                    if apr is None else "")
+
+    return templates.TemplateResponse(request, "fees.html", {
+        "user": user, "status": get_status(), "rep": rep,
+        "wallets": list(db.scalars(select(Wallet).order_by(Wallet.id)).all()),
+        "wallet_id": wallet_id, "ranges": ranges,
+        "base": base, "apr": apr, "apr_share": apr_share, "apr_note": apr_note,
+        "date_from": since.date().isoformat() if since else "",
+        "date_to": until.date().isoformat() if until else "",
+        "unclaimed": float(db.scalar(unclaimed_q) or 0.0),
+        "chart": {"labels": [b.label for b in rep.buckets],
+                  "usd": [round(b.usd, 2) for b in rep.buckets],
+                  "cumulative": [round(b.cumulative, 2) for b in rep.buckets],
+                  "events": [b.events for b in rep.buckets]},
+    })
+
+
+# --------------------------------------------------------------------------------------
 # Кошельки и обновление
 # --------------------------------------------------------------------------------------
 
@@ -336,15 +444,22 @@ def wallets_delete(wid: int, user: User = Depends(require_user),
 
 
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, saved: str = "0", error: str = "",
+def settings_page(request: Request, saved: str = "0", error: str = "", edit: str = "",
                   user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Настройки. edit=ID переводит форму временных сумм в режим правки — тем же
+    приёмом, что на странице партий: поля одни и те же, вторая форма не нужна."""
     all_pos, _ = _load(db, None, True)
     prefs = get_prefs(db)
     temps = list(db.scalars(select(TempDeposit).order_by(TempDeposit.created_at)).all())
+    tid = _qs_int(edit)
+    editing_temp = db.get(TempDeposit, tid) if tid else None
     return templates.TemplateResponse(request, "settings.html", {
         "user": user, "prefs": prefs, "status": get_status(), "config": config,
         "totals": _totals(all_pos, prefs.get("initial_deposit_usd"), _temp_total(db)),
         "temps": temps, "temp_total": _temp_total(db),
+        "editing_temp": editing_temp,
+        "temp_prefill": {"amount": _form_num(editing_temp.amount_usd) if editing_temp else "",
+                         "note": editing_temp.note if editing_temp else ""},
         "saved": _qs_flag(saved), "error": error,
     })
 
@@ -375,6 +490,30 @@ def temp_add(amount: str = Form(""), note: str = Form(""),
     return RedirectResponse("/settings?saved=1#temp", status_code=303)
 
 
+@router.post("/settings/temp/{tid}/edit")
+def temp_edit(tid: int, amount: str = Form(""), note: str = Form(""),
+              user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Правка временной суммы.
+
+    created_at не трогаем: это когда запись создана, а не когда деньги завели.
+    Переписывать её при исправлении опечатки в сумме означало бы подменять
+    историю — а по этой дате видно, что и когда доливалось.
+    """
+    row = db.get(TempDeposit, tid)
+    if row is None:
+        return RedirectResponse("/settings?error=Запись не найдена", status_code=303)
+    try:
+        value = parse_money(amount)
+    except ValueError as e:
+        return RedirectResponse(f"/settings?edit={tid}&error={e}#temp", status_code=303)
+    if not value:
+        return RedirectResponse(f"/settings?edit={tid}&error=Укажите сумму#temp",
+                                status_code=303)
+    row.amount_usd, row.note = value, note.strip()[:200]
+    db.commit()
+    return RedirectResponse("/settings?saved=1#temp", status_code=303)
+
+
 @router.post("/settings/temp/{tid}/delete")
 def temp_delete(tid: int, user: User = Depends(require_user),
                 db: Session = Depends(get_session)):
@@ -391,15 +530,32 @@ def temp_delete(tid: int, user: User = Depends(require_user),
 
 @router.get("/lots", response_class=HTMLResponse)
 def lots_page(request: Request, symbol: str = "", amount: str = "", price: str = "",
-              note: str = "", source: str = "", error: str = "",
+              note: str = "", source: str = "", error: str = "", edit: str = "",
               user: User = Depends(require_user), db: Session = Depends(get_session)):
-    """Список партий. Параметры запроса заполняют форму — по ссылке со страницы позиции."""
+    """Список партий. Параметры запроса заполняют форму — по ссылке со страницы позиции.
+
+    edit=ID переводит ту же форму в режим правки: поля у добавления и у изменения
+    одни и те же, отдельная страница только размножала бы разметку.
+    """
     rows, summary = summarize(db, PriceService(db))
+    lid = _qs_int(edit)
+    editing = db.get(TokenLot, lid) if lid else None
+    if editing is not None:
+        prefill = {"symbol": editing.symbol,
+                   "amount": _form_num(editing.amount),
+                   "price": _form_num(editing.avg_price_usd),
+                   "note": editing.note,
+                   "source": editing.source_position_id,
+                   # <input type="date"> понимает только ISO-формат
+                   "acquired": editing.acquired_at.strftime("%Y-%m-%d")
+                               if editing.acquired_at else ""}
+    else:
+        prefill = {"symbol": symbol, "amount": amount, "price": price,
+                   "note": note, "source": _qs_int(source), "acquired": ""}
     return templates.TemplateResponse(request, "lots.html", {
         "user": user, "rows": rows, "summary": summary,
         "symbols": known_symbols(db), "status": get_status(), "error": error,
-        "prefill": {"symbol": symbol, "amount": amount, "price": price,
-                    "note": note, "source": _qs_int(source)},
+        "editing": editing, "prefill": prefill,
     })
 
 
@@ -408,7 +564,7 @@ def lots_add(symbol: str = Form(""), amount: str = Form(""), price: str = Form("
              acquired: str = Form(""), note: str = Form(""), source: str = Form(""),
              user: User = Depends(require_user), db: Session = Depends(get_session)):
     try:
-        qty = parse_money(amount)
+        qty = parse_amount(amount)      # «1,234» — это 1.234 токена, не 1234
         avg = parse_money(price)
     except ValueError as e:
         return RedirectResponse(f"/lots?error={e}", status_code=303)
@@ -425,6 +581,49 @@ def lots_add(symbol: str = Form(""), amount: str = Form(""), price: str = Form("
     db.add(TokenLot(symbol=sym, coin=resolve_coin(db, sym), amount=qty,
                     avg_price_usd=avg, acquired_at=when or datetime.now(timezone.utc),
                     note=note.strip()[:200], source_position_id=_qs_int(source)))
+    db.commit()
+    return RedirectResponse("/lots", status_code=303)
+
+
+@router.post("/lots/{lid}/edit")
+def lots_edit(lid: int, symbol: str = Form(""), amount: str = Form(""),
+              price: str = Form(""), acquired: str = Form(""), note: str = Form(""),
+              user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Правка партии.
+
+    source_position_id не трогаем: связь с позицией, из которой партия родилась,
+    правкой цифр не меняется, и потерять её тут было бы обидно — по ней открывается
+    исходная позиция из таблицы.
+    """
+    row = db.get(TokenLot, lid)
+    if row is None:
+        return RedirectResponse("/lots?error=Партия не найдена", status_code=303)
+    try:
+        qty = parse_amount(amount)      # «1,234» — это 1.234 токена, не 1234
+        avg = parse_money(price)
+    except ValueError as e:
+        return RedirectResponse(f"/lots?edit={lid}&error={e}", status_code=303)
+    sym = symbol.strip()[:32]
+    if not sym or not qty or not avg:
+        return RedirectResponse(
+            f"/lots?edit={lid}&error=Нужны актив, количество и средняя цена",
+            status_code=303)
+
+    if sym != row.symbol:
+        # сменился актив — ключ цены DefiLlama пересчитываем, иначе «Сейчас»
+        # осталось бы от прежней монеты
+        row.coin = resolve_coin(db, sym)
+    row.symbol, row.amount, row.avg_price_usd = sym, qty, avg
+    row.note = note.strip()[:200]
+    if acquired.strip():
+        try:
+            row.acquired_at = datetime.fromisoformat(acquired.strip())
+        except ValueError:
+            pass          # мусор в дате не должен затирать нормальное значение
+    else:
+        # На добавлении пустая дата означает «сейчас», здесь — «дату не знаю»:
+        # человек её осознанно стёр, и подставлять сегодняшнюю было бы враньём.
+        row.acquired_at = None
     db.commit()
     return RedirectResponse("/lots", status_code=303)
 
@@ -462,6 +661,100 @@ def partial_status(request: Request, user: User = Depends(require_user)):
     бесполезен."""
     return templates.TemplateResponse(request, "partials/status.html",
                                       {"status": get_status()})
+
+
+# --------------------------------------------------------------------------------------
+# Журнал покупок BTC. Сознательно ни во что не входит — см. модель BtcBuy.
+# --------------------------------------------------------------------------------------
+
+@router.get("/btc", response_class=HTMLResponse)
+def btc_page(request: Request, error: str = "", edit: str = "",
+             user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Журнал покупок BTC. edit=ID переводит форму в режим правки, как на партиях."""
+    price_now = btc_price(db)
+    summary = btc_summarize(db, price_now)
+    bid = _qs_int(edit)
+    editing = db.get(BtcBuy, bid) if bid else None
+    if editing is not None:
+        prefill = {"amount": _form_num(editing.amount_btc),
+                   "price": _form_num(editing.price_usd),
+                   "note": editing.note,
+                   "bought": editing.bought_at.strftime("%Y-%m-%d") if editing.bought_at else ""}
+    else:
+        prefill = {"amount": "", "price": "", "note": "", "bought": ""}
+    return templates.TemplateResponse(request, "btc.html", {
+        "user": user, "status": get_status(), "s": summary, "error": error,
+        "editing": editing, "prefill": prefill,
+        "chart": btc_chart(summary),
+    })
+
+
+def _btc_fields(amount: str, price: str) -> tuple[float, float] | RedirectResponse:
+    """Разбор количества и цены, общий для добавления и правки."""
+    try:
+        qty = parse_amount(amount)      # «0,001» должно остаться тысячной долей
+        px = parse_money(price)
+    except ValueError as e:
+        return RedirectResponse(f"/btc?error={e}", status_code=303)
+    if not qty or not px:
+        return RedirectResponse("/btc?error=Нужны количество BTC и цена покупки",
+                                status_code=303)
+    return qty, px
+
+
+@router.post("/btc/add")
+def btc_add(amount: str = Form(""), price: str = Form(""), bought: str = Form(""),
+            note: str = Form(""), user: User = Depends(require_user),
+            db: Session = Depends(get_session)):
+    parsed = _btc_fields(amount, price)
+    if isinstance(parsed, RedirectResponse):
+        return parsed
+    qty, px = parsed
+    when = None
+    if bought.strip():
+        try:
+            when = datetime.fromisoformat(bought.strip())
+        except ValueError:
+            when = None
+    db.add(BtcBuy(amount_btc=qty, price_usd=px, note=note.strip()[:200],
+                  bought_at=when or datetime.now(timezone.utc)))
+    db.commit()
+    return RedirectResponse("/btc", status_code=303)
+
+
+@router.post("/btc/{bid}/edit")
+def btc_edit(bid: int, amount: str = Form(""), price: str = Form(""),
+             bought: str = Form(""), note: str = Form(""),
+             user: User = Depends(require_user), db: Session = Depends(get_session)):
+    row = db.get(BtcBuy, bid)
+    if row is None:
+        return RedirectResponse("/btc?error=Покупка не найдена", status_code=303)
+    parsed = _btc_fields(amount, price)
+    if isinstance(parsed, RedirectResponse):
+        # ошибку возвращаем в ту же форму, а не на пустое добавление
+        return RedirectResponse(f"/btc?edit={bid}&error=Проверьте количество и цену",
+                                status_code=303)
+    row.amount_btc, row.price_usd = parsed
+    row.note = note.strip()[:200]
+    if bought.strip():
+        try:
+            row.bought_at = datetime.fromisoformat(bought.strip())
+        except ValueError:
+            pass          # мусор в дате не должен затирать нормальное значение
+    else:
+        row.bought_at = None
+    db.commit()
+    return RedirectResponse("/btc", status_code=303)
+
+
+@router.post("/btc/{bid}/delete")
+def btc_delete(bid: int, user: User = Depends(require_user),
+               db: Session = Depends(get_session)):
+    row = db.get(BtcBuy, bid)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return RedirectResponse("/btc", status_code=303)
 
 
 @router.get("/calc", response_class=HTMLResponse)
