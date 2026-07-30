@@ -22,7 +22,8 @@ from app.core.carry import (chart_series as carry_chart, current as carry_curren
                             history as carry_history, history_series as carry_hist_series,
                             monthly as carry_monthly)
 from app.core.chains import CHAINS
-from app.core.fees import annualized, collected, share_of_base
+from app.core.fees import (accrual_series, accrued, annualized, collected,
+                           share_of_base)
 from app.core.inrange import for_position as inrange_for, for_positions as inrange_many
 from app.core.lots import known_symbols, resolve_coin, summarize
 from app.core.market import market_rates
@@ -429,6 +430,12 @@ def fees_page(request: Request, wallet: str = "",
     # для графика по месяцам берём всю доступную историю, а не выбранный период:
     # период фильтрует комиссии, а расход на займ есть только с начала записи
     carry_months = carry_monthly(carry_history(db, days=None, wallet_id=wallet_id))
+
+    # начисленные комиссии: сколько накапало по дням, а не сколько забрали
+    accrual = accrued(db, days=90, wallet_id=wallet_id)
+    # «за прошлые сутки» — последний ПОЛНЫЙ день: сегодняшний ещё не кончился,
+    # и показывать его как суточный итог значило бы занижать
+    full_days = [d for d in accrual.days if d.hours >= 20]
     coverage = inrange_many(db, [p.id for p in active])
     inrange_rows = sorted(
         [(p, coverage[p.id]) for p in active if p.id in coverage and coverage[p.id].reliable],
@@ -443,6 +450,8 @@ def fees_page(request: Request, wallet: str = "",
         # плата за плечо: приход комиссий без неё отвечает лишь на половину вопроса
         "carry": carry, "carry_chart": carry_chart(carry),
         "carry_hist": carry_hist, "carry_hist_chart": carry_hist_series(carry_hist),
+        "accrual": accrual, "accrual_chart": accrual_series(accrual),
+        "accrual_last": full_days[-1] if full_days else None,
         "snapshot_minutes": max(round(config.SNAPSHOT_INTERVAL / 60), 1),
         "date_from": since.date().isoformat() if since else "",
         "date_to": until.date().isoformat() if until else "",

@@ -379,6 +379,28 @@ def _token_amount(detail: dict | None, side: str) -> float | None:
         return None
 
 
+def _fee_tokens(detail: dict | None) -> dict:
+    """Несобранные комиссии в токенах и цены на этот момент — для расчёта начислений.
+
+    Сырые значения приходят строками (в базе они не влезают в целое), поэтому делим
+    на десятичность здесь: дальше нужны уже человеческие количества.
+    """
+    d = detail or {}
+    if d.get("kind") != "univ3":
+        return {}
+    usd = d.get("usd") or {}
+    out: dict[str, float | None] = {"price0_usd": usd.get("price0_usd"),
+                                    "price1_usd": usd.get("price1_usd")}
+    for i in (0, 1):
+        raw = d.get(f"fees{i}")
+        dec = ((d.get(f"token{i}") or {}).get("decimals"))
+        try:
+            out[f"fees{i}_tokens"] = int(raw) / (10 ** int(dec)) if raw is not None else None
+        except (TypeError, ValueError):
+            out[f"fees{i}_tokens"] = None
+    return out
+
+
 def _write_snapshots(db: Session, force: bool = False) -> None:
     """Точка на графике капитала: по каждому кошельку и суммарно.
 
@@ -445,7 +467,8 @@ def _write_snapshots(db: Session, force: bool = False) -> None:
                                 supply_rate=(rates.get("supply") if rates
                                              else (p.apr if p.protocol.startswith("fluid") else None)),
                                 debt_tokens=_token_amount(p.detail, "debt"),
-                                collateral_tokens=_token_amount(p.detail, "collateral")))
+                                collateral_tokens=_token_amount(p.detail, "collateral"),
+                                **_fee_tokens(p.detail)))
     db.flush()
 
 

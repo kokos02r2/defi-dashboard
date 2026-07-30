@@ -272,6 +272,16 @@ class PositionSnapshot(Base):
     debt_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
     collateral_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Несобранные комиссии В ТОКЕНАХ и цены на момент замера — чтобы считать, сколько
+    # НАЧИСЛИЛОСЬ за сутки. По долларовой сумме этого не узнать: у позиции вне
+    # диапазона комиссии не капают вовсе, а их долларовая оценка всё равно ходит
+    # туда-сюда вместе с курсом, и разница получилась бы то плюс, то минус.
+    # В токенах же несобранное только растёт — до момента сбора.
+    fees0_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fees1_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price0_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price1_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+
 
 class Alert(Base):
     """Событие, требующее внимания: выход из диапазона, просадка health factor."""

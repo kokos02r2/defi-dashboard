@@ -145,6 +145,51 @@
   {% endif %}
 </div>
 
+{# Начисленное — не то же, что собранное: комиссии капают непрерывно, а забирают их
+   разом. График по месяцам выше показывает моменты сбора, этот — сам темп заработка,
+   по дням и по позициям. Считается по замерам, поэтому наполняется со временем. #}
+<div class="card" style="margin-top:16px" id="accrual">
+  <div class="chart-head">
+    <h2>Начислено комиссий по дням</h2>
+    <span class="spacer"></span>
+    {% if accrual_last %}
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      за {{ accrual_last.key }} — <b>{{ accrual_last.total | usd }}</b>{% if accrual.per_day %} ·
+      в среднем {{ accrual.per_day | usd }}/сутки{% endif %}
+    </span>
+    {% endif %}
+  </div>
+  {% if accrual_chart.labels | length >= 1 %}
+  <div class="legend">
+    {% for s in accrual_chart.series %}
+    <span><i class="acc-{{ loop.index0 }}"></i>{{ s.title }}</span>
+    {% endfor %}
+  </div>
+  <div class="chart-box" style="height:230px"><canvas id="accrual-chart"></canvas></div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Это то, что <b>накапало</b>, а не то, что забрали: комиссии начисляются непрерывно,
+      пока цена внутри диапазона, а сбор случается разово. Считается по количеству токенов,
+      а не по долларовой сумме несобранного — у позиции вне диапазона комиссии не капают
+      вовсе, а их долларовая оценка всё равно ходит вместе с курсом, и «начисление»
+      получалось бы то плюс, то минус. Каждый прирост оценён по цене того же замера.
+      Часы, когда приложение не работало, не учитываются — рядом с днём видно, сколько
+      наблюдали.
+    </div>
+  </div>
+  {% else %}
+  <div class="body">
+    <div class="note">
+      <b>Начало записи.</b> Начисление видно только по разнице между замерами: сколько
+      комиссий было в токенах час назад и сколько стало. Замеры идут каждые
+      {{ snapshot_minutes }} минут, так что первый полный день появится здесь завтра, а
+      через неделю станет видно, какая позиция реально зарабатывает, а какая только
+      выглядит доходной.
+    </div>
+  </div>
+  {% endif %}
+</div>
+
 {% if carry.rows %}
 {# Комиссии — это приход. Плечо во Fluid — расход, который нигде не был виден: долг
    растёт сам каждый день. Одно без другого не отвечает на главный вопрос, поэтому
@@ -464,6 +509,40 @@ function drawFees() {
   });
 }
 
+// Начислено по дням: стопкой по позициям, чтобы виден был и общий темп, и вклад каждой.
+const ACCRUAL = {{ accrual_chart | tojson }};
+let accrualChart = null;
+
+function drawAccrual() {
+  const el = document.getElementById("accrual-chart");
+  if (!el || !ACCRUAL.labels.length) return;
+  const palette = ["--series-1", "--series-2", "--series-3", "--good", "--warning"]
+    .map(n => ChartKit.css(n));
+
+  const opts = ChartKit.options(ACCRUAL.total, c => {
+    const i = c.dataIndex;
+    const hours = ACCRUAL.hours[i];
+    const tail = hours < 23 ? " (наблюдали " + hours + " ч)" : "";
+    return " " + c.dataset.label + ": " + ChartKit.usd(c.parsed.y) + tail;
+  });
+  opts.scales.x.stacked = true;
+  opts.scales.y.stacked = true;
+
+  if (accrualChart) accrualChart.destroy();
+  accrualChart = new Chart(el, {
+    type: "bar",
+    data: {
+      labels: ACCRUAL.labels,
+      datasets: ACCRUAL.series.map((s, i) => ({
+        label: s.title, data: s.data,
+        backgroundColor: palette[i % palette.length],
+        borderRadius: 2, maxBarThickness: 34,
+      })),
+    },
+    options: opts,
+  });
+}
+
 // Плата за плечо: приход вверх, расход вниз — направление читается без легенды.
 const CARRY = {{ carry_chart | tojson }};
 let carryChart = null;
@@ -542,8 +621,10 @@ function drawCarryHist() {
 document.addEventListener("themechange", drawFees);   // цвета берутся из CSS-переменных
 document.addEventListener("themechange", drawCarry);
 document.addEventListener("themechange", drawCarryHist);
+document.addEventListener("themechange", drawAccrual);
 drawFees();
 drawCarry();
 drawCarryHist();
+drawAccrual();
 </script>
 {% endblock %}

@@ -17,13 +17,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Position, PositionEvent
+from app.db.models import Position, PositionEvent, PositionSnapshot
 
 MONTHS_RU = ("янв", "фев", "мар", "апр", "май", "июн",
              "июл", "авг", "сен", "окт", "ноя", "дек")
@@ -189,6 +189,114 @@ def collected(db: Session, since: datetime | None = None, until: datetime | None
 # Годовые из двух недель данных — это не оценка, а случайное число: один удачный
 # день, умноженный на 26. Ниже этого порога честнее не показывать ничего.
 MIN_SPAN_DAYS = 14.0
+
+
+# --------------------------------------------------------------------------------------
+# Начисленные комиссии: сколько накапало, а не сколько забрали
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class AccrualDay:
+    key: str                                   # 2026-07-30
+    per_position: dict[int, float] = field(default_factory=dict)
+    hours: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return sum(self.per_position.values())
+
+
+@dataclass
+class Accrual:
+    days: list[AccrualDay] = field(default_factory=list)
+    titles: dict[int, str] = field(default_factory=dict)   # id позиции -> подпись
+    total: float = 0.0
+    hours: float = 0.0
+
+    @property
+    def per_day(self) -> float | None:
+        return (self.total / (self.hours / 24)) if self.hours >= 1 else None
+
+
+# Тот же порог, что у платы за плечо: разрыв больше часа — это простой приложения,
+# и внутри него мог случиться сбор, который мы не увидели. Такой интервал не считаем.
+ACCRUAL_MAX_GAP_HOURS = 1.0
+
+
+def accrued(db: Session, days: int | None = 90, wallet_id: int | None = None) -> Accrual:
+    """Сколько комиссий НАЧИСЛИЛОСЬ по дням — по замерам несобранных комиссий.
+
+    Считается в токенах, а не в долларах, и это принципиально: у позиции вне диапазона
+    комиссии не начисляются вовсе, но долларовая оценка уже накопленных ходит вместе с
+    курсом — по ней «начисление» получалось бы то плюс, то минус. В токенах несобранное
+    только растёт, пока его не соберут.
+
+    Падение количества означает сбор: начисленное до него уже посчитано в прошлых
+    интервалах, поэтому такой шаг просто не прибавляет ничего.
+
+    Оценка в долларах — по цене из ТОГО ЖЕ замера, а не по нынешней: доход считается
+    там, где он возник.
+    """
+    q = (select(PositionSnapshot, Position)
+         .join(Position, PositionSnapshot.position_id == Position.id)
+         .where(PositionSnapshot.fees0_tokens.isnot(None))
+         .order_by(PositionSnapshot.position_id, PositionSnapshot.ts))
+    if wallet_id:
+        q = q.where(Position.wallet_id == wallet_id)
+    if days:
+        q = q.where(PositionSnapshot.ts >= datetime.now(timezone.utc) - timedelta(days=days))
+
+    per_position: dict[int, list[PositionSnapshot]] = {}
+    rep = Accrual()
+    for snap, pos in db.execute(q).all():
+        per_position.setdefault(snap.position_id, []).append(snap)
+        rep.titles[snap.position_id] = f"{pos.title} · {pos.chain}"
+
+    buckets: dict[str, AccrualDay] = {}
+    for pid, snaps in per_position.items():
+        for prev, cur in zip(snaps, snaps[1:]):
+            t0 = prev.ts if prev.ts.tzinfo else prev.ts.replace(tzinfo=timezone.utc)
+            t1 = cur.ts if cur.ts.tzinfo else cur.ts.replace(tzinfo=timezone.utc)
+            gap_h = (t1 - t0).total_seconds() / 3600.0
+            if gap_h <= 0 or gap_h > ACCRUAL_MAX_GAP_HOURS:
+                continue
+
+            usd = 0.0
+            for side in ("0", "1"):
+                before = getattr(prev, f"fees{side}_tokens")
+                after = getattr(cur, f"fees{side}_tokens")
+                price = getattr(cur, f"price{side}_usd")
+                if before is None or after is None or price is None:
+                    continue
+                grown = after - before
+                if grown > 0:
+                    usd += grown * price
+
+            key = t1.strftime("%Y-%m-%d")
+            day = buckets.setdefault(key, AccrualDay(key=key))
+            day.per_position[pid] = day.per_position.get(pid, 0.0) + usd
+            day.hours += gap_h
+            rep.total += usd
+
+    n_pos = max(len(per_position), 1)
+    for day in buckets.values():
+        day.hours = min(day.hours / n_pos, 24.0)
+    rep.days = [buckets[k] for k in sorted(buckets)]
+    rep.hours = sum(d.hours for d in rep.days)
+    return rep
+
+
+def accrual_series(a: Accrual) -> dict:
+    """Данные для графика: столбик на позицию, стопкой по дням."""
+    ids = sorted(a.titles, key=lambda pid: -sum(d.per_position.get(pid, 0.0) for d in a.days))
+    return {
+        "labels": [d.key for d in a.days],
+        "hours": [round(d.hours, 1) for d in a.days],
+        "series": [{"id": pid, "title": a.titles[pid],
+                    "data": [round(d.per_position.get(pid, 0.0), 4) for d in a.days]}
+                   for pid in ids],
+        "total": [round(d.total, 4) for d in a.days],
+    }
 
 
 def annualized(rep: Report, base: float | None) -> float | None:

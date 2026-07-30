@@ -468,3 +468,10 @@ h1.page { font-size: 19px; margin: 0 0 2px; letter-spacing: -.01em; }
 
 /* HTMX: при обновлении держим прошлый рендер приглушённым, без скачка вёрстки */
 .htmx-swapping { opacity: .55; transition: opacity .12s; }
+
+/* Цвета серий в легенде графика начислений — те же, что берёт сам график. */
+.legend i.acc-0 { background: var(--series-1); }
+.legend i.acc-1 { background: var(--series-2); }
+.legend i.acc-2 { background: var(--series-3); }
+.legend i.acc-3 { background: var(--good); }
+.legend i.acc-4 { background: var(--warning); }
