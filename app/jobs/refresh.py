@@ -29,6 +29,7 @@ from app.core.prices import PriceService
 from app.core.rpc import Rpc
 from app.core.tokens import TokenService
 from app.db.base import session_scope
+from app.db.prefs import enabled_chain_keys
 from app.db.models import (Alert, BlockTime, KV, Position, PositionEvent, PositionSnapshot,
                            Snapshot, Wallet, utcnow)
 from app.providers.base import Ctx, KnownPosition, Provider, RawPosition
@@ -343,7 +344,9 @@ def refresh(mode: str = "live", wallet_id: int | None = None) -> dict:
             wallets = db.scalars(
                 select(Wallet).where(Wallet.enabled.is_(True))
                 .where(Wallet.id == wallet_id if wallet_id else Wallet.id.isnot(None))).all()
-            chains = enabled_chains(config.ENABLED_CHAINS)
+            # список читаем из настроек на каждом прогоне: галочка в интерфейсе
+            # должна действовать со следующего цикла, без перезапуска
+            chains = enabled_chains(enabled_chain_keys(db))
 
             for w in wallets:
                 stats["wallets"] += 1
@@ -366,6 +369,16 @@ def refresh(mode: str = "live", wallet_id: int | None = None) -> dict:
     return stats
 
 
+def _token_amount(detail: dict | None, side: str) -> float | None:
+    """Количество токенов залога или долга из detail — если протокол его сообщает."""
+    part = (detail or {}).get(side) or {}
+    value = part.get("human")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _write_snapshots(db: Session, force: bool = False) -> None:
     """Точка на графике капитала: по каждому кошельку и суммарно.
 
@@ -383,6 +396,17 @@ def _write_snapshots(db: Session, force: bool = False) -> None:
                 return
 
     positions = db.scalars(select(Position).where(Position.is_open.is_(True))).all()
+
+    # Нечего снимать — не пишем точку вовсе.
+    #
+    # Ноль на графике означал бы «капитал был нулевым», а на самом деле это «мы ещё
+    # не знали»: так появлялась точка при самом первом запуске, до первой удачной
+    # синхронизации, и график начинался отвесной чертой от нуля, портя весь масштаб.
+    # Цена решения: если однажды закроете все позиции разом, график не поставит
+    # честный ноль, а остановится на последней точке. Это меньшее из двух зол —
+    # закрыть всё сразу можно раз в жизни, а первый запуск бывает у каждого.
+    if not positions:
+        return
 
     per_wallet: dict[int, list[Position]] = {}
     for p in positions:
@@ -409,10 +433,19 @@ def _write_snapshots(db: Session, force: bool = False) -> None:
     db.add(Snapshot(ts=now, wallet_id=None, **total))
 
     for p in positions:
+        # ставки и балансы в токенах — только у Fluid, у Uniswap их нет и не нужно
+        rates = (p.detail or {}).get("rates") or {}
         db.add(PositionSnapshot(position_id=p.id, ts=now, value_usd=p.value_usd,
                                 debt_usd=p.debt_usd, net_usd=p.net_usd,
                                 fees_unclaimed_usd=p.fees_unclaimed_usd,
-                                health_factor=p.health_factor, in_range=p.in_range))
+                                health_factor=p.health_factor, in_range=p.in_range,
+                                borrow_rate=rates.get("borrow"),
+                                # у депозита Fluid ставка лежит не в rates, а в apr —
+                                # иначе его доход выпал бы из истории целиком
+                                supply_rate=(rates.get("supply") if rates
+                                             else (p.apr if p.protocol.startswith("fluid") else None)),
+                                debt_tokens=_token_amount(p.detail, "debt"),
+                                collateral_tokens=_token_amount(p.detail, "collateral")))
     db.flush()
 
 

@@ -118,6 +118,40 @@ async function loadChart() {
   ).reverse().join("");
 }
 
+// Свёрнутые кошельки помним в localStorage: htmx каждую минуту подменяет таблицу
+// целиком, и без этого группы раскрывались бы обратно сами.
+const WKEY = "collapsedWallets";
+
+function collapsedWallets() {
+  try { return new Set(JSON.parse(localStorage.getItem(WKEY) || "[]")); }
+  catch (e) { return new Set(); }
+}
+
+function applyWalletGroups() {
+  const off = collapsedWallets();
+  document.querySelectorAll("tr.wgroup").forEach(tr => {
+    const id = tr.dataset.wallet;
+    const hide = off.has(id);
+    tr.classList.toggle("collapsed", hide);
+    document.querySelectorAll('tr[data-in="' + id + '"]')
+            .forEach(r => r.classList.toggle("row-off", hide));
+  });
+}
+
+// делегирование на документ: сама строка приходит заново после каждой подмены
+document.addEventListener("click", e => {
+  const tr = e.target.closest ? e.target.closest("tr.wgroup") : null;
+  if (!tr) return;
+  const id = tr.dataset.wallet;
+  const set = collapsedWallets();
+  if (set.has(id)) { set.delete(id); } else { set.add(id); }
+  localStorage.setItem(WKEY, JSON.stringify(Array.from(set)));
+  applyWalletGroups();
+});
+
+document.body.addEventListener("htmx:afterSettle", applyWalletGroups);
+applyWalletGroups();
+
 ChartKit.rangeButtons(document.querySelector(".filters .seg"), d => { days = d; loadChart(); });
 document.addEventListener("themechange", loadChart);   // цвета берутся из CSS-переменных
 loadChart();

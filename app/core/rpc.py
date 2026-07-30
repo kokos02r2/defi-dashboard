@@ -46,6 +46,28 @@ def _parse_range_hint(msg: str) -> int | None:
     return None
 
 
+def _dedup(urls: list[str]) -> list[str]:
+    """Убирает повторы, сохраняя порядок: один и тот же узел не нужно пробовать дважды."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _order(public: list[str], own: list[str], reserve: bool) -> list[str]:
+    """Очередь нод: свой узел либо первым, либо последним — как резерв.
+
+    Резервный режим (RPC_RESERVE_ONLY) существует ради платных тарифов с квотой:
+    run() идёт по списку с начала и, найдя работающую ноду, остаётся на ней, поэтому
+    узел в конце очереди задействуется только когда все публичные молчат. Расход
+    квоты падает почти до нуля, а страховка на случай их падения остаётся.
+    """
+    return _dedup(public + own) if reserve else _dedup(own + public)
+
+
 class Rpc:
     """Обёртка над несколькими публичными нодами: при ошибке/лимите берём следующую."""
 
@@ -54,9 +76,23 @@ class Rpc:
         self.chain = chain
         env = os.environ.get(f"RPC_{chain.key.upper()}")
         head = ([env] if env else []) + ([extra_rpc] if extra_rpc else [])
-        self.urls = head + list(chain.rpcs)
-        # для eth_getLogs сначала пробуем ноды с архивом и широким диапазоном
-        self.log_urls = head + list(chain.log_rpcs) + [u for u in chain.rpcs if u not in chain.log_rpcs]
+        reserve = os.environ.get("RPC_RESERVE_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+        self.urls = _order(list(chain.rpcs), head, reserve)
+
+        # Для eth_getLogs свой узел первым НЕ ставится, и это измерено, а не угадано:
+        # на запрос логов за всю историю сети коммерческий шлюз отвечает в разы
+        # медленнее публичной архивной ноды (2.9 с против 0.9 с на Base, 2.4 с против
+        # 0.2 с на Arbitrum — по трём позициям каждый, разброс единицы процентов).
+        # Обычные eth_call у того же шлюза наоборот вдвое быстрее, поэтому очереди
+        # для вызовов и для логов разные.
+        #
+        # RPC_LOGS_<СЕТЬ> — на случай, если ваш узел для логов действительно лучше
+        # (платный архив, приватная нода): он встанет первым именно для логов.
+        # Архивные ноды идут первыми ВСЕГДА: даже в приоритетном режиме свой узел
+        # для логов не первый — он на широких диапазонах медленнее в разы.
+        log_env = os.environ.get(f"RPC_LOGS_{chain.key.upper()}")
+        self.log_urls = _dedup(([log_env] if log_env else []) + list(chain.log_rpcs)
+                               + _order(list(chain.rpcs), head, reserve))
         self.idx = 0
         self.max_span: int | None = None        # выученный лимит диапазона для getLogs
         self.ts_cache: dict[int, int] = ts_cache if ts_cache is not None else {}

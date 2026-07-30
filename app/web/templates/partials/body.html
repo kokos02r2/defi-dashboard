@@ -15,9 +15,8 @@
 
 {% if totals.vs.initial %}
 {# Чистая стоимость против заведённой суммы. Заклеймленное реинвестируется, поэтому
-   уже внутри неё и отдельно не прибавляется. Вторая плитка появляется только когда
-   есть временные доливки — без них обе цифры совпали бы и вторая была бы шумом.
-   Направление несёт стрелка, цвет только усиливает. #}
+   уже внутри неё и отдельно не прибавляется. Временные доливки вычтены: они лежат
+   внутри позиций, но прибылью не являются. Направление несёт стрелка, цвет усиливает. #}
 <div class="tiles">
   <div class="tile">
     <div class="label">От входа{{ ' · без временных' if totals.vs.temp }}</div>
@@ -34,20 +33,6 @@
     {% endif %}
   </div>
 
-  {% if totals.vs.temp %}
-  <div class="tile">
-    <div class="label">От входа · с временными</div>
-    <div class="value {{ 'up' if totals.vs.delta_gross > 0 else ('down' if totals.vs.delta_gross < 0 else '') }}">
-      {{ '▲' if totals.vs.delta_gross > 0 else ('▼' if totals.vs.delta_gross < 0 else '·') }}
-      {{ totals.vs.pct_gross | abs | pct(2) }}
-    </div>
-    <div class="sub">
-      {{ '+' if totals.vs.delta_gross > 0 }}{{ totals.vs.delta_gross | usd }}
-      · сейчас {{ totals.vs.gross | usd_short }} из {{ totals.vs.initial | usd_short }}
-    </div>
-    <div class="sub">весь портфель, включая {{ totals.vs.temp | usd_short }} доливок</div>
-  </div>
-  {% endif %}
 </div>
 {% elif wallet_id %}
 <div class="note" style="margin-bottom:16px">
@@ -63,6 +48,14 @@
     <div class="sub">
       активы {{ totals.value | usd_short }}{% if totals.debt %} · долг {{ totals.debt | usd_short }}{% endif %}
     </div>
+    {% if totals.vs.temp %}
+    {# Доливки физически лежат ВНУТРИ этой суммы: они заведены в позиции, поэтому
+       входят и в активы, и в чистую стоимость. Показываем здесь, чтобы было видно,
+       какая часть цифры — свои временные деньги, а не заработанное. #}
+    <div class="sub" title="Временно заведённые суммы из Настроек — они внутри этой стоимости">
+      включая доливки {{ totals.vs.temp | usd_short }}
+    </div>
+    {% endif %}
   </div>
 
   {# Единственная плитка-ссылка: за ней есть отдельная история, в отличие от
@@ -76,14 +69,6 @@
       {% if totals.fees_claimed %}заклеймлено за всё время {{ totals.fees_claimed | usd_short }}{% else %}по активным позициям{% endif %}
     </div>
   </a>
-
-  <div class="tile">
-    <div class="label">PnL с комиссиями</div>
-    <div class="value sm">{{ m.delta(totals.pnl) }}</div>
-    <div class="sub">
-      {% if totals.net_invested %}своих денег в позициях {{ totals.net_invested | usd_short }}{% else %}нужна полная синхронизация{% endif %}
-    </div>
-  </div>
 
   <div class="tile">
     <div class="label">Годовые по комиссиям</div>
@@ -121,8 +106,28 @@
       </tr>
     </thead>
     <tbody>
-      {% for p in positions %}
-      <tr onclick="location.href='/position/{{ p.id }}'" style="cursor:pointer">
+      {# Позиции сгруппированы по кошелькам: в общем списке иначе не видно, чьи они.
+         Заголовок группы появляется только когда кошельков больше одного — при
+         фильтре по одному он был бы шумом (см. _wallet_groups). #}
+      {% for g in groups %}
+      {% if g.wallet %}
+      <tr class="wgroup" data-wallet="{{ g.wallet.id }}" title="Свернуть или раскрыть">
+        <td colspan="5">
+          <span class="caret">▾</span>
+          <b>{{ g.wallet.title }}</b>
+          <span class="meta">{{ g.wallet.short }} ·
+            {{ g.open_count }} {{ g.open_count | plural('активная', 'активных', 'активных') }}
+            {%- if g.count > g.open_count %} из {{ g.count }}{% endif -%}
+          </span>
+        </td>
+        <td class="num"><b>{{ g.net | usd }}</b></td>
+        <td class="num">{{ g.fees | usd if g.fees else '' }}</td>
+        <td colspan="2"></td>
+      </tr>
+      {% endif %}
+      {% for p in g.positions %}
+      <tr onclick="location.href='/position/{{ p.id }}'" style="cursor:pointer"
+          {% if g.wallet %}data-in="{{ g.wallet.id }}"{% endif %}>
         <td>
           <div class="name"><a href="/position/{{ p.id }}">{{ p.title }}</a></div>
           <div class="meta">{{ p.subtitle }}</div>
@@ -145,6 +150,7 @@
         </td>
         <td class="num">{{ p.apr | pct(1) if p.apr is not none else '—' }}</td>
       </tr>
+      {% endfor %}
       {% endfor %}
     </tbody>
   </table>

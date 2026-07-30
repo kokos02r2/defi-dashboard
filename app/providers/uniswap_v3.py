@@ -43,6 +43,10 @@ POS_TYPES = ["uint96", "address", "address", "address", "uint24", "int24", "int2
 TICK_TYPES = ["uint128", "int128", "uint256", "uint256", "int56", "uint160", "uint32", "bool"]
 SLOT0_TYPES = ["uint160", "int24", "uint16", "uint16", "uint16", "uint8", "bool"]
 
+# Адрес пула для тройки (сеть, token0, token1, fee). Неизменен навсегда, поэтому
+# живёт в памяти процесса: спрашивать фабрику об этом каждую минуту незачем.
+_POOL_CACHE: dict[tuple[str, str, str, int], str] = {}
+
 
 # --------------------------------------------------------------------------------------
 # Чтение состояния позиций (дёшево — только eth_call через Multicall3)
@@ -110,13 +114,22 @@ def _read_positions(ctx: Ctx, wallet: str) -> list[_Pos]:
     if not positions:
         return []
 
-    # адреса пулов
-    pool_res = multicall(rpc, [
-        (chain.factory, call_data("getPool(address,address,uint24)",
-                                  ["address", "address", "uint24"], [p.token0, p.token1, p.fee]))
-        for p in positions])
-    for p, (ok, raw) in zip(positions, pool_res):
-        p.pool = Web3.to_checksum_address(abi_decode(["address"], raw)[0]) if ok and raw else ""
+    # Адреса пулов. Пул для тройки (token0, token1, fee) неизменен, поэтому спрашиваем
+    # фабрику один раз за жизнь процесса: на минутном цикле это два запроса в минуту
+    # на сеть, которые дают всегда один и тот же ответ.
+    ask = [p for p in positions if (chain.key, p.token0, p.token1, p.fee) not in _POOL_CACHE]
+    if ask:
+        pool_res = multicall(rpc, [
+            (chain.factory, call_data("getPool(address,address,uint24)",
+                                      ["address", "address", "uint24"],
+                                      [p.token0, p.token1, p.fee]))
+            for p in ask])
+        for p, (ok, raw) in zip(ask, pool_res):
+            if ok and raw:
+                _POOL_CACHE[(chain.key, p.token0, p.token1, p.fee)] = \
+                    Web3.to_checksum_address(abi_decode(["address"], raw)[0])
+    for p in positions:
+        p.pool = _POOL_CACHE.get((chain.key, p.token0, p.token1, p.fee), "")
 
     # метаданные токенов — из вечного кэша, в сеть ходим только за новыми
     meta = ctx.tokens.resolve([t for p in positions for t in (p.token0, p.token1)])
@@ -124,18 +137,53 @@ def _read_positions(ctx: Ctx, wallet: str) -> list[_Pos]:
         p.sym0, p.dec0 = meta.get(p.token0, ("?", 18))
         p.sym1, p.dec1 = meta.get(p.token1, ("?", 18))
 
-    # состояние пулов + тики границ (для несобранных комиссий)
-    calls: list[tuple[str, bytes]] = []
+    # Состояние пулов + тики границ (для несобранных комиссий).
+    #
+    # Пять вызовов на позицию — дорого, и для позиции без ликвидности и без
+    # несобранных комиссий они дают строго нули: и amounts_from_liquidity, и
+    # uncollected_fees от нулевой ликвидности возвращают ноль. А таких позиций со
+    # временем становится в разы больше активных (у одного кошелька 114 закрытых на
+    # 5 активных), и минутный цикл тратил три четверти запросов на неизменяемое.
+    #
+    # Для них читаем только slot0 — он нужен, чтобы на странице позиции показать
+    # текущую цену относительно старых границ, — и один раз на пул, а не на позицию:
+    # закрытые позиции обычно сидят в одном и том же пуле.
     live = [p for p in positions if p.pool and int(p.pool, 16) != 0]
+    working: list[_Pos] = []
+    idle: list[_Pos] = []
     for p in live:
+        (working if (p.liquidity or p.owed0 or p.owed1) else idle).append(p)
+
+    calls: list[tuple[str, bytes]] = []
+    for p in working:
         calls.append((p.pool, call_data("slot0()", [], [])))
         calls.append((p.pool, call_data("feeGrowthGlobal0X128()", [], [])))
         calls.append((p.pool, call_data("feeGrowthGlobal1X128()", [], [])))
         calls.append((p.pool, call_data("ticks(int24)", ["int24"], [p.tick_lower])))
         calls.append((p.pool, call_data("ticks(int24)", ["int24"], [p.tick_upper])))
+
+    idle_pools: list[str] = []
+    for p in idle:
+        if p.pool not in idle_pools:
+            idle_pools.append(p.pool)
+    calls.extend((pool, call_data("slot0()", [], [])) for pool in idle_pools)
+
     res = multicall(rpc, calls)
 
-    for i, p in enumerate(live):
+    # цена в пулах, где стоят только закрытые позиции
+    for j, pool in enumerate(idle_pools):
+        ok, raw = res[len(working) * 5 + j]
+        if not ok or not raw:
+            continue
+        try:
+            slot0 = abi_decode(SLOT0_TYPES, raw)
+        except Exception:  # noqa: BLE001 — пул может быть не инициализирован
+            continue
+        for p in idle:
+            if p.pool == pool:
+                p.sqrt_price_x96, p.tick_cur = slot0[0], slot0[1]
+
+    for i, p in enumerate(working):
         chunk = res[i * 5:i * 5 + 5]
         try:
             slot0 = abi_decode(SLOT0_TYPES, chunk[0][1])

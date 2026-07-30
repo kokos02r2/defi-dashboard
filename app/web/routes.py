@@ -11,13 +11,16 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.orm import Session
 
 from app import config
 from app.auth import (authenticate, current_user, note_failure, require_user,
                       require_user_api, reset_attempts, throttled)
 from app.core.btc import btc_price, chart_series as btc_chart, summarize as btc_summarize
+from app.core.carry import (chart_series as carry_chart, current as carry_current,
+                            history as carry_history, history_series as carry_hist_series,
+                            monthly as carry_monthly)
 from app.core.chains import CHAINS
 from app.core.fees import annualized, collected, share_of_base
 from app.core.inrange import for_position as inrange_for, for_positions as inrange_many
@@ -25,7 +28,8 @@ from app.core.lots import known_symbols, resolve_coin, summarize
 from app.core.market import market_rates
 from app.core.prices import PriceService
 from app.db.base import get_session
-from app.db.prefs import get_prefs, parse_amount, parse_money, save_prefs
+from app.db.prefs import (enabled_chain_keys, get_prefs, parse_amount,
+                          parse_money, save_prefs)
 from app.db.models import (Alert, BtcBuy, Position, PositionEvent, PositionSnapshot, Snapshot,
                            TempDeposit, TokenLot, User, Wallet)  # noqa: F401 — Alert нужен для статуса доставки
 from app.jobs import scheduler
@@ -185,6 +189,43 @@ def _initial_for(db: Session, wallet_id: int | None) -> float | None:
     return get_prefs(db).get("initial_deposit_usd")
 
 
+def _wallet_groups(db: Session, positions: list[Position],
+                   wallet_id: int | None) -> list[dict]:
+    """Позиции, разложенные по кошелькам, для сворачиваемых групп в таблице.
+
+    Группы нужны только когда кошельков в таблице больше одного: при фильтре по
+    одному кошельку или когда он единственный, заголовок группы был бы шумом —
+    и там возвращается один безымянный блок, который шаблон рисует как раньше.
+    """
+    order: list[int] = []
+    by_wallet: dict[int, list[Position]] = {}
+    for p in positions:
+        if p.wallet_id not in by_wallet:
+            by_wallet[p.wallet_id] = []
+            order.append(p.wallet_id)
+        by_wallet[p.wallet_id].append(p)
+
+    if wallet_id or len(order) < 2:
+        return [{"wallet": None, "positions": positions}]
+
+    wallets = {w.id: w for w in db.scalars(
+        select(Wallet).where(Wallet.id.in_(order))).all()}
+    groups = []
+    for wid in order:
+        items = by_wallet[wid]
+        groups.append({
+            "wallet": wallets.get(wid),
+            "positions": items,
+            "net": sum(p.net_usd or 0 for p in items if p.is_open),
+            "fees": sum(p.fees_unclaimed_usd or 0 for p in items if p.is_open),
+            "open_count": sum(1 for p in items if p.is_open),
+            "count": len(items),
+        })
+    # крупные кошельки сверху — так же, как позиции внутри группы
+    groups.sort(key=lambda g: -(g["net"] or 0))
+    return groups
+
+
 def _load(db: Session, wallet_id: int | None, show_closed: bool) -> tuple[list, list]:
     q = select(Position)
     if wallet_id:
@@ -206,6 +247,7 @@ def dashboard(request: Request, wallet: str | None = None, closed: str = "0",
     return templates.TemplateResponse(request, "dashboard.html", {
         "user": user, "wallets": wallets, "wallet_id": wallet_id,
         "positions": visible,
+        "groups": _wallet_groups(db, visible, wallet_id),
         "totals": _totals(all_pos, _initial_for(db, wallet_id), _temp_total(db)),
         "show_closed": show_closed, "alerts": alerts,
         "status": get_status(), "chains": CHAINS,
@@ -222,6 +264,7 @@ def partial_summary(request: Request, wallet: str | None = None, closed: str = "
                              .order_by(desc(Alert.ts)).limit(20)).all())
     return templates.TemplateResponse(request, "partials/body.html", {
         "positions": visible,
+        "groups": _wallet_groups(db, visible, wallet_id),
         "totals": _totals(all_pos, _initial_for(db, wallet_id), _temp_total(db)),
         "alerts": alerts,
         "wallet_id": wallet_id, "show_closed": show_closed, "status": get_status(),
@@ -380,6 +423,12 @@ def fees_page(request: Request, wallet: str = "",
     if wallet_id:
         active_q = active_q.where(Position.wallet_id == wallet_id)
     active = list(db.scalars(active_q).all())
+    carry = carry_current(db, wallet_id)
+    # факт по замерам: пока их мало, шаблон покажет, что история копится
+    carry_hist = carry_history(db, days=90, wallet_id=wallet_id)
+    # для графика по месяцам берём всю доступную историю, а не выбранный период:
+    # период фильтрует комиссии, а расход на займ есть только с начала записи
+    carry_months = carry_monthly(carry_history(db, days=None, wallet_id=wallet_id))
     coverage = inrange_many(db, [p.id for p in active])
     inrange_rows = sorted(
         [(p, coverage[p.id]) for p in active if p.id in coverage and coverage[p.id].reliable],
@@ -391,14 +440,24 @@ def fees_page(request: Request, wallet: str = "",
         "wallet_id": wallet_id, "ranges": ranges,
         "base": base, "apr": apr, "apr_share": apr_share, "apr_note": apr_note,
         "inrange_rows": inrange_rows,
+        # плата за плечо: приход комиссий без неё отвечает лишь на половину вопроса
+        "carry": carry, "carry_chart": carry_chart(carry),
+        "carry_hist": carry_hist, "carry_hist_chart": carry_hist_series(carry_hist),
         "snapshot_minutes": max(round(config.SNAPSHOT_INTERVAL / 60), 1),
         "date_from": since.date().isoformat() if since else "",
         "date_to": until.date().isoformat() if until else "",
         "unclaimed": float(db.scalar(unclaimed_q) or 0.0),
+        # На графике комиссий рядом с приходом — фактический расход на займ по тем же
+        # месяцам. Где данных ещё нет, ставим null, а не ноль: ноль означал бы
+        # «плечо было бесплатным», и месяц до начала записи выглядел бы выгодным.
         "chart": {"labels": [b.label for b in rep.buckets],
                   "usd": [round(b.usd, 2) for b in rep.buckets],
                   "cumulative": [round(b.cumulative, 2) for b in rep.buckets],
-                  "events": [b.events for b in rep.buckets]},
+                  "events": [b.events for b in rep.buckets],
+                  "carry": [(-round(carry_months[b.key].cost, 2)
+                             if b.key in carry_months else None) for b in rep.buckets],
+                  "carry_cov": [(round(carry_months[b.key].coverage or 0)
+                                 if b.key in carry_months else None) for b in rep.buckets]},
     })
 
 
@@ -472,8 +531,21 @@ def settings_page(request: Request, saved: str = "0", error: str = "", edit: str
     temps = list(db.scalars(select(TempDeposit).order_by(TempDeposit.created_at)).all())
     tid = _qs_int(edit)
     editing_temp = db.get(TempDeposit, tid) if tid else None
+    # для карточки сетей: что выбрано и сколько позиций уже есть в каждой сети —
+    # выключать сеть с активными позициями почти всегда ошибка, и это должно быть видно
+    picked = set(enabled_chain_keys(db))
+    per_chain = {ch: (total, open_) for ch, total, open_ in db.execute(
+        select(Position.chain, func.count(),
+               func.coalesce(func.sum(case((Position.is_open.is_(True), 1), else_=0)), 0))
+        .group_by(Position.chain)).all()}
+    chain_rows = [{"key": key, "name": ch.name, "on": key in picked,
+                   "total": per_chain.get(key, (0, 0))[0],
+                   "open": per_chain.get(key, (0, 0))[1]}
+                  for key, ch in CHAINS.items()]
+
     return templates.TemplateResponse(request, "settings.html", {
         "user": user, "prefs": prefs, "status": get_status(), "config": config,
+        "chain_rows": chain_rows,
         "totals": _totals(all_pos, prefs.get("initial_deposit_usd"), _temp_total(db)),
         "temps": temps, "temp_total": _temp_total(db),
         "editing_temp": editing_temp,
@@ -507,6 +579,23 @@ def temp_add(amount: str = Form(""), note: str = Form(""),
     db.add(TempDeposit(amount_usd=value, note=note.strip()[:200]))
     db.commit()
     return RedirectResponse("/settings?saved=1#temp", status_code=303)
+
+
+@router.post("/settings/chains")
+def settings_chains(chains: list[str] = Form(default=[]),
+                    user: User = Depends(require_user),
+                    db: Session = Depends(get_session)):
+    """Какие сети опрашивать. Действует со следующего цикла, без перезапуска.
+
+    Пустой выбор не принимаем: он означал бы «не опрашивать ничего», и дашборд молча
+    перестал бы обновляться — состояние, которое не должно быть достижимым из UI.
+    """
+    picked = [k for k in chains if k in CHAINS]
+    if not picked:
+        return RedirectResponse("/settings?error=Оставьте хотя бы одну сеть#chains",
+                                status_code=303)
+    save_prefs(db, enabled_chains=picked)
+    return RedirectResponse("/settings?saved=1#chains", status_code=303)
 
 
 @router.post("/settings/temp/{tid}/edit")

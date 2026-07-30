@@ -45,6 +45,42 @@
   </div>
 </div>
 
+<div class="card" style="margin-top:16px" id="chains">
+  <h2>Сети</h2>
+  <div class="body">
+    <form method="post" action="/settings/chains">
+      <div class="chain-grid">
+        {% for c in chain_rows %}
+        <label class="chain-pick{{ ' on' if c.on }}">
+          <input type="checkbox" name="chains" value="{{ c.key }}" {{ 'checked' if c.on }}>
+          <span>
+            <b>{{ c.name }}</b>
+            <span class="meta">
+              {%- if c.open %}{{ c.open }} {{ c.open | plural('активная', 'активных', 'активных') }}
+                {%- if c.total > c.open %}, {{ c.total }} всего{% endif %}
+              {%- elif c.total %}{{ c.total }} {{ c.total | plural('позиция', 'позиции', 'позиций') }}, все закрыты
+              {%- else %}позиций нет{% endif -%}
+            </span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+      <button class="btn primary" type="submit" style="margin-top:12px">Сохранить</button>
+    </form>
+
+    <div class="note">
+      Опрашиваются только выбранные сети. Каждая лишняя — это запросы к нодам каждую
+      минуту впустую, а публичные ноды за такое начинают отвечать отказом.
+      Настройка действует со следующего цикла, перезапуск не нужен.
+    </div>
+    <div class="note">
+      Выключенная сеть <b>ничего не удаляет</b>: позиции остаются в базе и на дашборде,
+      просто перестают обновляться — их цифры застынут на последнем известном значении.
+      Заведёте позицию в новой сети — включите её здесь, иначе дашборд её не увидит.
+    </div>
+  </div>
+</div>
+
 <div class="card" style="margin-top:16px" id="temp">
   <h2>{{ 'Изменить сумму' if editing_temp else 'Временно заведённые суммы' }}</h2>
   <div class="body">

@@ -132,7 +132,8 @@
     </span>
   </div>
   <div class="legend">
-    <span><i style="background:var(--series-1)"></i>За месяц</span>
+    <span><i style="background:var(--series-1)"></i>Комиссии за месяц</span>
+    <span><i style="background:var(--critical)"></i>Расход на займ</span>
     <span><i style="background:var(--series-2)"></i>Накопительно</span>
   </div>
   <div class="chart-box"><canvas id="fees-chart"></canvas></div>
@@ -143,6 +144,149 @@
   </div>
   {% endif %}
 </div>
+
+{% if carry.rows %}
+{# Комиссии — это приход. Плечо во Fluid — расход, который нигде не был виден: долг
+   растёт сам каждый день. Одно без другого не отвечает на главный вопрос, поэтому
+   считаем и то и другое на одной странице. #}
+<div class="card" style="margin-top:16px" id="carry">
+  <h2>Плата за плечо во Fluid</h2>
+  <div class="body" style="padding-bottom:0">
+    <div class="tiles" style="margin-bottom:0">
+      <div class="tile">
+        <div class="label">В день</div>
+        <div class="value {{ 'down' if carry.net_day < 0 else 'up' }}">
+          {{ '−' if carry.net_day < 0 else '+' }}{{ carry.net_day | abs | usd }}
+        </div>
+        <div class="sub">
+          за долг {{ carry.cost_day | usd }} · с залога {{ carry.income_day | usd }}
+        </div>
+      </div>
+      <div class="tile">
+        <div class="label">В месяц</div>
+        <div class="value {{ 'down' if carry.net_month < 0 else 'up' }}">
+          {{ '−' if carry.net_month < 0 else '+' }}{{ carry.net_month | abs | usd }}
+        </div>
+        <div class="sub">
+          за долг {{ carry.cost_month | usd }} · с залога {{ carry.income_month | usd }}
+        </div>
+      </div>
+      <div class="tile">
+        <div class="label">В год</div>
+        <div class="value sm {{ 'down' if carry.net_year < 0 else 'up' }}">
+          {{ '−' if carry.net_year < 0 else '+' }}{{ carry.net_year | abs | usd_short }}
+        </div>
+        <div class="sub">
+          {{ carry.net_on_equity | pct(2) }} на капитал {{ carry.equity | usd_short }}
+        </div>
+      </div>
+      {% if rep.per_month %}
+      {# Главная строка страницы: приход минус расход. Разной природы, поэтому подпись
+         честно говорит, что комиссии — факт за период, а плечо — при нынешних ставках. #}
+      <div class="tile">
+        <div class="label">Комиссии минус плечо</div>
+        {% set balance = rep.per_month + carry.net_month %}
+        <div class="value sm {{ 'up' if balance > 0 else 'down' }}">
+          {{ '+' if balance > 0 else '−' }}{{ balance | abs | usd }}
+        </div>
+        <div class="sub">в месяц: комиссии {{ rep.per_month | usd }} − плечо {{ carry.net_month | abs | usd }}</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--good)"></i>Приход с залога</span>
+    <span><i style="background:var(--critical)"></i>Расход по долгу</span>
+    <span><i style="background:var(--ink-2)"></i>Итог</span>
+  </div>
+  <div class="chart-box"><canvas id="carry-chart"></canvas></div>
+
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Позиция</th>
+          <th class="num">Залог</th><th class="num">Ставка</th>
+          <th class="num">Долг</th><th class="num">Ставка</th>
+          <th class="num">В месяц</th><th class="num">На капитал</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in carry.rows %}
+        <tr>
+          <td>
+            <div class="name"><a href="/position/{{ r.position_id }}">{{ r.title }}</a></div>
+            <div class="meta">{{ r.chain }}{% if r.subtitle %} · {{ r.subtitle }}{% endif %}</div>
+          </td>
+          <td class="num">{{ r.collateral | usd }}</td>
+          <td class="num">{{ r.supply_rate | pct(2) }}</td>
+          <td class="num">{{ r.debt | usd if r.debt else '—' }}</td>
+          <td class="num">{{ r.borrow_rate | pct(2) if r.debt else '—' }}</td>
+          <td class="num">
+            <span class="{{ 'status bad' if r.net_year < 0 else 'status ok' }}">
+              {{ '−' if r.net_year < 0 else '+' }}{{ (r.net_year / 12) | abs | usd }}
+            </span>
+          </td>
+          <td class="num">{{ r.net_on_equity | pct(2) if r.net_on_equity is not none else '—' }}</td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td><b>Итого</b></td>
+          <td class="num"><b>{{ (carry.equity + carry.debt) | usd }}</b></td>
+          <td class="num"></td>
+          <td class="num"><b>{{ carry.debt | usd }}</b></td>
+          <td class="num"></td>
+          <td class="num"><b>{{ '−' if carry.net_month < 0 else '+' }}{{ carry.net_month | abs | usd }}</b></td>
+          <td class="num"><b>{{ carry.net_on_equity | pct(2) }}</b></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  {# Факт по замерам — в отличие от плиток выше, это уже потраченное, а не прогноз.
+     Наполняется по мере накопления снапшотов, поэтому пока их мало, честнее сказать
+     об этом прямо, чем рисовать график из двух точек. #}
+  <div class="body" style="padding-top:0">
+    {% if carry_hist.days | length >= 2 %}
+    <h2 style="padding:0;margin:6px 0 0">Сколько уже стоило — по факту</h2>
+    <div class="legend" style="padding:8px 0 10px">
+      <span><i style="background:var(--critical)"></i>Расход за сутки</span>
+      <span><i style="background:var(--good)"></i>Приход за сутки</span>
+      <span><i style="background:var(--ink-2)"></i>Накопительно</span>
+    </div>
+    <div class="chart-box" style="height:220px"><canvas id="carry-hist-chart"></canvas></div>
+    <div class="note">
+      За {{ carry_hist.hours | round | int }} {{ (carry_hist.hours | round | int) | plural('час', 'часа', 'часов') }}
+      наблюдения плечо стоило
+      <b>{{ carry_hist.net | abs | usd }}</b>{% if carry_hist.per_day is not none %},
+      это {{ carry_hist.per_day | abs | usd }} в сутки{% endif %}.
+      {% if carry_hist.full_days %}Полных суток в истории: {{ carry_hist.full_days }}.{% endif %}
+      Считается интегрированием: ставка и баланс, записанные в каждый замер, умножаются
+      на реально прошедшее время. Часы, когда приложение не работало, не начисляются —
+      что было со ставкой в это время, неизвестно.
+    </div>
+    {% else %}
+    <div class="note">
+      <b>История стоимости плеча начала записываться.</b> Ставки во Fluid плавают, и
+      задним числом их не восстановить — ни в базе, ни в блокчейне их за прошлое нет.
+      Поэтому факт можно считать только с того дня, как начали записывать: замеры идут
+      каждые {{ snapshot_minutes }} минут, первые сутки появятся здесь завтра, а через
+      месяц будет видна и месячная стоимость. Цифры выше — прогноз по нынешним ставкам,
+      он доступен сразу.
+    </div>
+    {% endif %}
+    <div class="note">
+      Считается по <b>нынешним</b> ставкам и балансам: во Fluid ставки плавают вместе с
+      загрузкой пула, поэтому это прогноз «если так и останется», а не факт за прошлый
+      месяц. Расход берётся от суммы долга, а она больше вашего капитала при LTV выше
+      50% — отсюда {{ carry.net_on_equity | pct(2) }} на капитал при ставке долга
+      {{ carry.rows[0].borrow_rate | pct(2) }}.
+      Проценты во Fluid не списываются платежом: долг просто растёт сам.
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% if inrange_rows %}
 {# Время в диапазоне живёт на этой же странице не случайно: годовые по комиссиям
@@ -279,10 +423,17 @@ function drawFees() {
 
   // Ось для накопительной кривой своя, справа: рядом с месячными столбиками в
   // тысячах она иначе прижмёт их к нулю и месяцы станет не различить.
-  const opts = ChartKit.options(FEES.usd.concat(FEES.cumulative), c => {
+  const carryVals = (FEES.carry || []).filter(v => v !== null);
+  const opts = ChartKit.options(FEES.usd.concat(FEES.cumulative).concat(carryVals), c => {
     const i = c.dataIndex;
     if (c.dataset.yAxisID === "y1") return " Накопительно: " + ChartKit.usd(c.parsed.y);
-    return " За месяц: " + ChartKit.usd(c.parsed.y) +
+    if (c.dataset.label === "Расход на займ") {
+      // покрытие обязательно: неполный месяц иначе читается как дешёвый
+      const cov = FEES.carry_cov[i];
+      const tail = cov !== null && cov < 95 ? " (данных за " + cov + "% месяца)" : "";
+      return " Расход на займ: " + ChartKit.usd(Math.abs(c.parsed.y)) + tail;
+    }
+    return " Комиссии: " + ChartKit.usd(c.parsed.y) +
            " (" + FEES.events[i] + (FEES.events[i] === 1 ? " сбор" : " сборов") + ")";
   });
   opts.scales.y.ticks.callback = ChartKit.tickFormatter(FEES.usd);
@@ -299,8 +450,11 @@ function drawFees() {
     data: {
       labels: FEES.labels,
       datasets: [
-        {type: "bar", label: "За месяц", data: FEES.usd, yAxisID: "y",
+        {type: "bar", label: "Комиссии за месяц", data: FEES.usd, yAxisID: "y",
          backgroundColor: bar, borderRadius: 3, maxBarThickness: 46},
+        // расход вниз, и только за месяцы, где запись велась: null не рисуется вовсе
+        {type: "bar", label: "Расход на займ", data: FEES.carry || [], yAxisID: "y",
+         backgroundColor: ChartKit.css("--critical"), borderRadius: 3, maxBarThickness: 46},
         {type: "line", label: "Накопительно", data: FEES.cumulative, yAxisID: "y1",
          borderColor: line, borderWidth: 2, tension: .25,
          pointRadius: 0, pointHoverRadius: 4, fill: false},
@@ -310,7 +464,86 @@ function drawFees() {
   });
 }
 
+// Плата за плечо: приход вверх, расход вниз — направление читается без легенды.
+const CARRY = {{ carry_chart | tojson }};
+let carryChart = null;
+
+function drawCarry() {
+  const el = document.getElementById("carry-chart");
+  if (!el || !CARRY.labels.length) return;
+  const good = ChartKit.css("--good"), bad = ChartKit.css("--critical"),
+        ink = ChartKit.css("--ink-2");
+
+  const all = CARRY.income.concat(CARRY.cost).concat(CARRY.net);
+  const opts = ChartKit.options(all,
+    c => " " + c.dataset.label + ": " + ChartKit.usd(Math.abs(c.parsed.y)) + " в месяц");
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(all);
+
+  if (carryChart) carryChart.destroy();
+  carryChart = new Chart(el, {
+    data: {
+      labels: CARRY.labels,
+      datasets: [
+        {type: "bar", label: "Приход с залога", data: CARRY.income,
+         backgroundColor: good, borderRadius: 3, maxBarThickness: 34},
+        {type: "bar", label: "Расход по долгу", data: CARRY.cost,
+         backgroundColor: bad, borderRadius: 3, maxBarThickness: 34},
+        {type: "line", label: "Итог", data: CARRY.net, borderColor: ink,
+         borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false, tension: 0},
+      ],
+    },
+    options: opts,
+  });
+}
+
+// Факт по дням: столбики расхода и прихода за сутки плюс накопительная кривая
+// на своей оси — суточные центы иначе исчезли бы рядом с накопленными долларами.
+const CARRY_HIST = {{ carry_hist_chart | tojson }};
+let carryHistChart = null;
+
+function drawCarryHist() {
+  const el = document.getElementById("carry-hist-chart");
+  if (!el || !CARRY_HIST.labels.length) return;
+  const good = ChartKit.css("--good"), bad = ChartKit.css("--critical"),
+        ink = ChartKit.css("--ink-2"), muted = ChartKit.css("--ink-muted");
+
+  const daily = CARRY_HIST.cost.concat(CARRY_HIST.income);
+  const opts = ChartKit.options(daily, c => {
+    const i = c.dataIndex;
+    const hours = CARRY_HIST.hours[i];
+    const tail = hours < 23 ? " (наблюдали " + hours + " ч)" : "";
+    return " " + c.dataset.label + ": " + ChartKit.usd(Math.abs(c.parsed.y)) + tail;
+  });
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(daily);
+  opts.scales.y1 = {
+    position: "right", grid: {display: false}, border: {display: false},
+    ticks: {color: muted, font: {size: 11}, padding: 8,
+            callback: ChartKit.tickFormatter(CARRY_HIST.cumulative)},
+  };
+
+  if (carryHistChart) carryHistChart.destroy();
+  carryHistChart = new Chart(el, {
+    data: {
+      labels: CARRY_HIST.labels,
+      datasets: [
+        {type: "bar", label: "Расход за сутки", data: CARRY_HIST.cost, yAxisID: "y",
+         backgroundColor: bad, borderRadius: 2, maxBarThickness: 26},
+        {type: "bar", label: "Приход за сутки", data: CARRY_HIST.income, yAxisID: "y",
+         backgroundColor: good, borderRadius: 2, maxBarThickness: 26},
+        {type: "line", label: "Накопительно", data: CARRY_HIST.cumulative, yAxisID: "y1",
+         borderColor: ink, borderWidth: 2, tension: .2, pointRadius: 0,
+         pointHoverRadius: 4, fill: false},
+      ],
+    },
+    options: opts,
+  });
+}
+
 document.addEventListener("themechange", drawFees);   // цвета берутся из CSS-переменных
+document.addEventListener("themechange", drawCarry);
+document.addEventListener("themechange", drawCarryHist);
 drawFees();
+drawCarry();
+drawCarryHist();
 </script>
 {% endblock %}

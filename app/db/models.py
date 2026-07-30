@@ -257,6 +257,21 @@ class PositionSnapshot(Base):
     health_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
     in_range: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # Ставки и балансы В ТОКЕНАХ на момент замера — чтобы потом посчитать, сколько
+    # плечо стоило ФАКТИЧЕСКИ, а не «если ставка не изменится».
+    #
+    # Ставки во Fluid плавают вместе с загрузкой пула, и восстановить их задним числом
+    # нельзя: ни в базе, ни в дешёвом виде в блокчейне их нет. Записанная ставка плюс
+    # записанный баланс плюс известный интервал между замерами дают проинтегрированную
+    # стоимость — то есть факт.
+    #
+    # В токенах, а не в долларах: долларовая сумма долга шевелится вместе с курсом
+    # (пусть у USDC и слабо), а нас интересует именно рост самого долга от процентов.
+    borrow_rate: Mapped[float | None] = mapped_column(Float, nullable=True)   # % годовых
+    supply_rate: Mapped[float | None] = mapped_column(Float, nullable=True)   # % годовых
+    debt_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    collateral_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+
 
 class Alert(Base):
     """Событие, требующее внимания: выход из диапазона, просадка health factor."""

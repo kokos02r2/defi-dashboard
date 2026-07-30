@@ -30,6 +30,56 @@ CURRENT_TTL = 55           # секунд; чуть меньше периода 
 SEARCH_WIDTH = "6h"
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
+# Запасной ключ для ИСТОРИЧЕСКИХ цен.
+#
+# У DefiLlama история по адресу токена на конкретной сети начинается не с рождения
+# токена: по WETH и USD₮0 на Arbitrum данных раньше осени 2024 нет вовсе — ни с
+# шестичасовым окном поиска, ни с четырёхдневным. А тот же самый актив под
+# идентификатором CoinGecko отдаётся за любую дату. На реальных данных из-за этого
+# потерялось 65 сборов комиссий на $1838 — они просто выпали из всех итогов.
+#
+# Подмена корректна, а не удобна: обёртка отличается от самой монеты на десятые
+# доли процента, и тикер в шапке по той же причине берёт курс монеты, а не обёртки.
+# Только для истории: текущую цену адресный ключ отдаёт всегда и точнее.
+FALLBACK_COINS = {
+    # ETH и обёртки
+    "coingecko:ethereum": ("ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                           "arbitrum:0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+                           "base:0x4200000000000000000000000000000000000006",
+                           "optimism:0x4200000000000000000000000000000000000006"),
+    # стейблкоины: у мостовых версий история особенно рваная
+    "coingecko:usd-coin": ("ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                           "arbitrum:0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+                           "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+                           "optimism:0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+                           "polygon:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"),
+    "coingecko:tether": ("ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7",
+                         "arbitrum:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+                         "polygon:0xc2132d05d31c914a87c6611c10748aeb04b58e8f"),
+    # BTC и обёртки
+    "coingecko:bitcoin": ("ethereum:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+                          "arbitrum:0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+                          "base:0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf"),
+}
+
+# развёрнутая карта: адресный ключ -> ключ CoinGecko
+_FALLBACK: dict[str, str] = {addr: cg for cg, addrs in FALLBACK_COINS.items()
+                             for addr in addrs}
+
+
+def fallback_coin(coin: str) -> str | None:
+    """Чем заменить ключ, если по нему исторических данных нет."""
+    return _FALLBACK.get((coin or "").lower())
+
+
+def _nearest(entry: Any, ts: int) -> Decimal | None:
+    """Ближайшая к моменту котировка из ответа batchHistorical, если она достаточно близко."""
+    prices = (entry or {}).get("prices") or []
+    near = min(prices, key=lambda x: abs(x["timestamp"] - ts), default=None)
+    if near and abs(near["timestamp"] - ts) <= 6 * 3600:
+        return Decimal(str(near["price"]))
+    return None
+
 
 def coin_key(chain: Chain, token: str) -> str:
     """Ключ монеты для DefiLlama. Нативную монету подменяем обёрнутой версией."""
@@ -120,28 +170,71 @@ class PriceService:
                 log.warning("[prices] пакетная загрузка не удалась: %s", str(e)[:120])
                 continue
             got = data.get("coins", {})
+            missed: list[tuple[str, int]] = []
             for c, t in chunk:
-                prices = (got.get(c) or {}).get("prices") or []
-                near = min(prices, key=lambda x: abs(x["timestamp"] - t), default=None)
-                if near and abs(near["timestamp"] - t) <= 6 * 3600:
-                    self._store_hist(c, t, Decimal(str(near["price"])))
+                val = _nearest(got.get(c), t)
+                if val is not None:
+                    self._store_hist(c, t, val)
                 else:
-                    # запоминаем промах, чтобы не переспрашивать поштучно
-                    self._store_hist(c, t, None)
+                    missed.append((c, t))
+            self._prefetch_fallback(missed)
+
+    def _prefetch_fallback(self, missed: list[tuple[str, int]]) -> None:
+        """Второй заход по промахам — под ключом CoinGecko.
+
+        Результат кладём под ИСХОДНЫЙ ключ: дальше вся программа спрашивает цену по
+        адресу токена и получает её из кэша, ничего не зная про подмену.
+        """
+        want: dict[str, list[int]] = {}
+        back: dict[tuple[str, int], tuple[str, int]] = {}
+        for coin, ts in missed:
+            alt = fallback_coin(coin)
+            if not alt:
+                self._store_hist(coin, ts, None)     # заменить нечем — промах навсегда
+                continue
+            want.setdefault(alt, []).append(ts)
+            back[(alt, ts)] = (coin, ts)
+        if not want:
+            return
+
+        got: dict[str, Any] = {}
+        try:
+            url = ("https://coins.llama.fi/batchHistorical?coins="
+                   + urllib.parse.quote(json.dumps(want)) + f"&searchWidth={SEARCH_WIDTH}")
+            got = (_http_json(url, timeout=60) or {}).get("coins", {})
+        except Exception as e:  # noqa: BLE001 — не вышло, значит цены просто нет
+            log.warning("[prices] запасной источник недоступен: %s", str(e)[:120])
+
+        recovered = 0
+        for (alt, ts), (coin, _) in back.items():
+            val = _nearest(got.get(alt), ts)
+            self._store_hist(coin, ts, val)
+            recovered += val is not None
+        if recovered:
+            log.info("[prices] по запасному ключу восстановлено котировок: %s", recovered)
 
     def at(self, coin: str, ts: int) -> Decimal | None:
         cached = self._hist_cached(coin, ts)
         if cached is not _MISS:
             return cached
+        val = self._one_hist(coin, ts)
+        if val is None:
+            alt = fallback_coin(coin)
+            if alt:
+                val = self._one_hist(alt, ts)
+                if val is not None:
+                    log.debug("[prices] %s за %s взят по ключу %s", coin, ts, alt)
+        self._store_hist(coin, ts, val)
+        return val
+
+    def _one_hist(self, coin: str, ts: int) -> Decimal | None:
         try:
             data = _http_json(
                 f"https://coins.llama.fi/prices/historical/{ts}/{coin}?searchWidth={SEARCH_WIDTH}")
             pr = data.get("coins", {}).get(coin, {}).get("price")
-            val = Decimal(str(pr)) if pr is not None else None
+            return Decimal(str(pr)) if pr is not None else None
         except Exception:  # noqa: BLE001
-            val = None
-        self._store_hist(coin, ts, val)
-        return val
+            return None
 
     # ------------------------------------------------------------------- внутреннее
 

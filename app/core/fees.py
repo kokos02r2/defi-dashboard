@@ -153,7 +153,11 @@ def collected(db: Session, since: datetime | None = None, until: datetime | None
         # диапазон тянем по фактическим данным, но если человек задал границы —
         # уважаем их: пустой хвост месяца тоже факт, его видно на графике
         lo = _month_key(since) if since else keys[0]
-        hi = _month_key(until) if until else keys[-1]
+        # Без заданной границы тянем до ТЕКУЩЕГО месяца, а не до последнего сбора.
+        # Иначе график заканчивается в прошлом и делает вид, что время остановилось
+        # вместе с комиссиями: месяц без сборов — тоже месяц, и это ровно тот же довод,
+        # по которому пустые месяцы внутри диапазона показываются нулём.
+        hi = _month_key(until) if until else _month_key(datetime.now(timezone.utc))
         lo, hi = min(lo, keys[0]), max(hi, keys[-1])
         running = 0.0
         for key in _month_range(lo, hi):

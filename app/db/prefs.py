@@ -19,6 +19,11 @@ DEFAULTS: dict[str, Any] = {
     # None — не задано, сравнение на дашборде не показывается.
     "initial_deposit_usd": None,
     "initial_note": "",
+    # Какие сети опрашивать. None — берём список из .env (ENABLED_CHAINS).
+    # Список сетей переехал сюда из .env, потому что его меняют по ходу дела:
+    # завели позицию в новой сети — включили галочку, а не полезли в файл и
+    # перезапуск. Значение из .env осталось значением по умолчанию.
+    "enabled_chains": None,
 }
 
 
@@ -28,6 +33,20 @@ def get_prefs(db: Session) -> dict:
     if row is not None and isinstance(row.value, dict):
         prefs.update({k: v for k, v in row.value.items() if k in DEFAULTS})
     return prefs
+
+
+def enabled_chain_keys(db: Session) -> list[str]:
+    """Ключи сетей для опроса: из настроек, а если там пусто — из .env.
+
+    Пустой список в настройках не принимаем: он означал бы «не опрашивать ничего»,
+    и дашборд молча перестал бы обновляться. Такое состояние должно быть невозможным,
+    а не задаваемым.
+    """
+    from app import config
+    chosen = get_prefs(db).get("enabled_chains")
+    if isinstance(chosen, list) and chosen:
+        return [str(k) for k in chosen]
+    return list(config.ENABLED_CHAINS)
 
 
 def save_prefs(db: Session, **changes) -> dict:
