@@ -1,0 +1,309 @@
+{# Живая часть страницы операций: фильтры, итоги, форма и список.
+
+   Отдельным куском, потому что этот же кусок сервер отдаёт в ответ на каждое
+   действие — правку, удаление, категорию. htmx подменяет только его, страница
+   целиком не перезагружается, и выставленные фильтры остаются на месте: раньше
+   после каждой галочки приходилось заново выбирать месяц, счёт и поиск.
+
+   Всё, что здесь помечено hx-, работает и без JS: у форм остались обычные
+   action/method, у ссылок — href, и сервер в этом случае отвечает переходом на
+   тот же адрес с теми же фильтрами.
+#}
+<div id="tx-live">
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">✓</span>
+  <span>Сохранено{% if applied %} · правила разобрали ещё {{ applied }}
+    {{ applied | int | plural('операцию', 'операции', 'операций') }}{% endif %}{% if hint %}
+    · {{ hint }}{% endif %}</span>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+<div class="filters">
+  <form method="get" action="/fin/tx"
+        hx-get="/fin/tx" hx-target="#tx-live" hx-select="#tx-live" hx-swap="outerHTML"
+        hx-push-url="true">
+    {# requestSubmit, а не submit: обычный submit не порождает события, и htmx его
+       не увидит — страница перезагрузилась бы целиком #}
+    <select name="m" onchange="this.form.requestSubmit()" aria-label="Месяц">
+      {% for key in months_have %}
+        <option value="{{ key }}" {{ 'selected' if key == month and not all_time }}>{{ key | month_ru }}</option>
+      {% endfor %}
+    </select>
+    <select name="account" onchange="this.form.requestSubmit()" aria-label="Счёт">
+      <option value="">Все счета</option>
+      {% for a in accounts %}
+        <option value="{{ a.id }}" {{ 'selected' if f.account == a.id | string }}>{{ a.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="category" onchange="this.form.requestSubmit()" aria-label="Категория">
+      <option value="">Все категории</option>
+      <option value="none" {{ 'selected' if f.category == 'none' }}>Без категории</option>
+      {% for c in cats %}
+        <option value="{{ c.id }}" {{ 'selected' if f.category == c.id | string }}>
+          {{ c.name }}{{ ' (доход)' if c.kind == 'income' }}
+        </option>
+      {% endfor %}
+    </select>
+    <select name="kind" onchange="this.form.requestSubmit()" aria-label="Вид">
+      <option value="">Расходы и доходы</option>
+      <option value="expense" {{ 'selected' if f.kind == 'expense' }}>Только расходы</option>
+      <option value="income" {{ 'selected' if f.kind == 'income' }}>Только доходы</option>
+    </select>
+    <input type="search" name="q" value="{{ f.q }}" placeholder="Поиск в описании"
+           style="width:180px">
+    {% if all_time %}<input type="hidden" name="all_time" value="1">{% endif %}
+    {% if f.uncat == '1' %}<input type="hidden" name="uncat" value="1">{% endif %}
+    <button class="btn" type="submit">Показать</button>
+  </form>
+
+  <span class="spacer" style="flex:1"></span>
+
+  <div class="seg" role="group" aria-label="Период">
+    <a href="/fin/tx?m={{ month }}" aria-pressed="{{ 'false' if all_time else 'true' }}"
+       hx-get="/fin/tx?m={{ month }}" hx-target="#tx-live" hx-select="#tx-live"
+       hx-swap="outerHTML" hx-push-url="true">Месяц</a>
+    <a href="/fin/tx?all_time=1" aria-pressed="{{ 'true' if all_time else 'false' }}"
+       hx-get="/fin/tx?all_time=1" hx-target="#tx-live" hx-select="#tx-live"
+       hx-swap="outerHTML" hx-push-url="true">Всё время</a>
+  </div>
+  {% if f.uncat == '1' %}
+    <a class="btn ghost" href="/fin/tx?m={{ month }}"
+       hx-get="/fin/tx?m={{ month }}" hx-target="#tx-live" hx-select="#tx-live"
+       hx-swap="outerHTML" hx-push-url="true">Показать все</a>
+  {% else %}
+    <a class="btn ghost" href="/fin/tx?uncat=1"
+       hx-get="/fin/tx?uncat=1" hx-target="#tx-live" hx-select="#tx-live"
+       hx-swap="outerHTML" hx-push-url="true">Только без категории</a>
+  {% endif %}
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Найдено операций</div>
+    <div class="value sm">{{ total }}</div>
+    <div class="sub">
+      {% if all_time %}за всё время{% else %}{{ month | month_ru }}{% endif %}
+      {%- if pages > 1 %} · страница {{ page }} из {{ pages }}{% endif %}
+    </div>
+  </div>
+  <div class="tile">
+    <div class="label">Расходы по фильтру</div>
+    <div class="value sm">{{ expense_sum | money(base) }}</div>
+    <div class="sub">без исключённых из итогов</div>
+  </div>
+  <div class="tile">
+    <div class="label">Доходы по фильтру</div>
+    <div class="value sm">{{ income_sum | money(base) }}</div>
+    <div class="sub">без исключённых из итогов</div>
+  </div>
+</div>
+
+{# Одна форма на два режима: edit=ID в адресе решает, куда она отправится #}
+<div class="card" id="tx-form" style="margin-bottom:16px">
+  <h2>{{ 'Изменить операцию' if editing else 'Добавить вручную' }}</h2>
+  <div class="body">
+    <form method="post"
+          action="{{ ('/fin/tx/%d/edit' % editing.id) if editing else '/fin/tx/add' }}"
+          hx-post="{{ ('/fin/tx/%d/edit' % editing.id) if editing else '/fin/tx/add' }}"
+          hx-target="#tx-live" hx-swap="outerHTML"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Вид</span>
+        <select name="kind" style="min-width:120px">
+          <option value="expense" {{ 'selected' if not editing or editing.kind == 'expense' }}>Расход</option>
+          <option value="income" {{ 'selected' if editing and editing.kind == 'income' }}>Доход</option>
+        </select>
+      </label>
+      <label>
+        <span class="fl">Когда</span>
+        <input type="date" name="day" style="width:150px"
+               value="{{ editing.day.isoformat() if editing else today }}">
+      </label>
+      <label>
+        <span class="fl">Сумма</span>
+        <input type="text" name="amount" style="width:130px" required
+               value="{{ '%.2f' % editing.amount if editing else '' }}" placeholder="45,20">
+      </label>
+      <label>
+        <span class="fl">Валюта</span>
+        <select name="currency" style="min-width:95px">
+          {% for c in currencies %}
+            <option value="{{ c }}" {{ 'selected' if editing and editing.currency == c }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Счёт</span>
+        <select name="account" style="min-width:150px" required>
+          {% for a in accounts %}
+            <option value="{{ a.id }}" {{ 'selected' if editing and editing.account_id == a.id }}>
+              {{ a.name }} · {{ a.currency }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Категория</span>
+        <select name="category" style="min-width:160px">
+          <option value="">— без категории —</option>
+          {% for c in cats %}
+            <option value="{{ c.id }}" {{ 'selected' if editing and editing.category_id == c.id }}>
+              {{ c.name }}{{ ' (доход)' if c.kind == 'income' }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span class="fl">Описание</span>
+        <input type="text" name="note" style="width:100%"
+               value="{{ editing.note if editing else '' }}"
+               placeholder="Mercadona, продукты на неделю">
+      </label>
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Добавить' }}</button>
+      {% if editing %}
+      <a class="btn ghost" href="{{ back }}"
+         hx-get="{{ back }}" hx-target="#tx-live" hx-select="#tx-live"
+         hx-swap="outerHTML" hx-push-url="true">Отмена</a>
+      {% endif %}
+    </form>
+    <div class="note">
+      Валюта по умолчанию берётся у счёта, но её можно поменять: покупка в поездке
+      проходит по карте в другой валюте, и записать её надо как есть — пересчёт в
+      {{ base }} произойдёт по курсу того дня.
+    </div>
+  </div>
+</div>
+
+{% if rows %}
+<div class="card">
+  <h2>{% if f.uncat == '1' %}Не разобрано по категориям{% else %}Операции{% endif %}</h2>
+  {% if f.uncat == '1' %}
+  <div class="body" style="padding-bottom:0">
+    <div class="note" style="margin-top:0">
+      Выберите категорию — и, если этот платёж будет повторяться, оставьте образец в
+      поле рядом. Из него получится правило, и все похожие операции разберутся сами,
+      включая будущие загрузки. Образец сравнивается без учёта регистра и как часть
+      строки: «mercadona» подойдёт к «MERCADONA 4021 BARCELONA».
+    </div>
+  </div>
+  {% endif %}
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Когда</th><th>Описание</th>
+          {% if f.uncat != '1' %}<th>Категория</th>{% endif %}
+          <th>Счёт</th><th class="num">Сумма</th>
+          <th{% if f.uncat == '1' %} style="min-width:420px"{% endif %}></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in rows %}
+        <tr class="{{ 'dimmed' if t.excluded }}{{ ' editing' if editing and editing.id == t.id }}">
+          <td class="meta">{{ t.day | dmy }}</td>
+          <td>
+            <div class="name">{{ t.note or '—' }}</div>
+            <div class="meta">
+              {{ 'доход' if t.kind == 'income' else 'расход' }}
+              {%- if t.source == 'import' %} · из выписки{% endif %}
+              {%- if t.excluded %} · <b>не учитывается</b>{% endif %}
+            </div>
+          </td>
+          {% if f.uncat != '1' %}
+          <td class="meta">{{ t.category.name if t.category else '—' }}</td>
+          {% endif %}
+          <td class="meta">{{ t.account.name if t.account else '—' }}</td>
+          <td class="num">
+            {% if t.amount_base is not none %}
+              {{ t.amount_base | money(base) }}
+            {% else %}
+              <span class="status warn">нет курса</span>
+            {% endif %}
+            {% if t.currency != base %}
+            <div class="meta">{{ t.amount | money(t.currency) }}</div>
+            {% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            {% if f.uncat == '1' %}
+            {# Разбор очереди — одним движением: категория, образец правила и применить #}
+            <form method="post" action="/fin/tx/{{ t.id }}/categorize"
+                  hx-post="/fin/tx/{{ t.id }}/categorize"
+                  hx-target="#tx-live" hx-swap="outerHTML"
+                  style="display:flex;gap:6px;justify-content:flex-end;align-items:center">
+              <select name="category" required style="min-width:150px">
+                <option value="">категория…</option>
+                {% for c in cats %}
+                  {% if c.kind == t.kind %}
+                  <option value="{{ c.id }}">{{ c.name }}</option>
+                  {% endif %}
+                {% endfor %}
+              </select>
+              <input type="text" name="pattern" value="{{ t.rule_hint }}"
+                     placeholder="образец правила" style="width:150px"
+                     title="Оставьте пустым, если правило не нужно">
+              <input type="hidden" name="back" value="{{ back }}">
+              <button class="btn primary" type="submit" title="Применить">✓</button>
+            </form>
+            {% else %}
+            <a class="btn ghost" href="{{ back }}{{ '&' if '?' in back else '?' }}edit={{ t.id }}#tx-form"
+               hx-get="{{ back }}{{ '&' if '?' in back else '?' }}edit={{ t.id }}"
+               hx-target="#tx-live" hx-select="#tx-live"
+               hx-swap="outerHTML show:#tx-form:top" title="Изменить">✎</a>
+            <form method="post" action="/fin/tx/{{ t.id }}/exclude" style="display:inline"
+                  hx-post="/fin/tx/{{ t.id }}/exclude" hx-target="#tx-live" hx-swap="outerHTML">
+              <input type="hidden" name="back" value="{{ back }}">
+              <button class="btn ghost" type="submit"
+                      title="{{ 'Вернуть в итоги' if t.excluded else 'Не учитывать в итогах — например, перевод между своими счетами' }}">
+                {{ '↩' if t.excluded else '⊘' }}
+              </button>
+            </form>
+            <form method="post" action="/fin/tx/{{ t.id }}/delete" style="display:inline"
+                  hx-post="/fin/tx/{{ t.id }}/delete" hx-target="#tx-live" hx-swap="outerHTML"
+                  hx-confirm="Удалить операцию {{ t.amount | money(t.currency) }} от {{ t.day | dmy }}? Если она пришла из выписки, повторная загрузка того же файла вернёт её обратно.">
+              <input type="hidden" name="back" value="{{ back }}">
+              <button class="btn ghost danger" type="submit" title="Удалить">✕</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <div class="body" style="display:flex;gap:8px;align-items:center">
+    {% if page > 1 %}
+      <a class="btn ghost" href="/fin/tx?{{ qs }}&amp;page={{ page - 1 }}"
+         hx-get="/fin/tx?{{ qs }}&amp;page={{ page - 1 }}" hx-target="#tx-live"
+         hx-select="#tx-live" hx-swap="outerHTML" hx-push-url="true">← Раньше</a>
+    {% endif %}
+    <span class="meta">страница {{ page }} из {{ pages }}</span>
+    {% if page < pages %}
+      <a class="btn ghost" href="/fin/tx?{{ qs }}&amp;page={{ page + 1 }}"
+         hx-get="/fin/tx?{{ qs }}&amp;page={{ page + 1 }}" hx-target="#tx-live"
+         hx-select="#tx-live" hx-swap="outerHTML" hx-push-url="true">Позже →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    {% if f.uncat == '1' %}
+      Всё разобрано по категориям.
+    {% else %}
+      По этому фильтру операций нет.<br>
+      Попробуйте «всё время» или <a href="/fin/import">загрузите выписку</a>.
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+</div>

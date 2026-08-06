@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from datetime import date, timedelta
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -64,8 +65,17 @@ def _ctx(db: Session, **extra) -> dict:
 
 
 def _redirect(path: str, **params) -> RedirectResponse:
-    q = "&".join(f"{k}={v}" for k, v in params.items() if v not in (None, ""))
-    return RedirectResponse(f"{path}?{q}" if q else path, status_code=303)
+    """Переход с добавлением параметров к тем, что уже есть в адресе.
+
+    Склеивать через «?» нельзя: путь возврата почти всегда уже несёт фильтры
+    («/fin/tx?m=2026-07&account=3»), и второй знак вопроса превращал месяц в
+    «2026-07?saved=1» — фильтр молча слетал после каждого сохранения.
+    """
+    path, _, query = path.partition("?")
+    items = [(k, v) for k, v in parse_qsl(query) if k not in params]
+    items += [(k, str(v)) for k, v in params.items() if v not in (None, "")]
+    return RedirectResponse(f"{path}?{urlencode(items)}" if items else path,
+                            status_code=303)
 
 
 def _month(m: str | None, db: Session) -> tuple[date, date, str]:
@@ -119,13 +129,20 @@ def overview(request: Request, m: str | None = None, user: User = Depends(requir
 # Операции
 # --------------------------------------------------------------------------------------
 
-@router.get("/tx", response_class=HTMLResponse)
-def tx_page(request: Request, m: str | None = None, account: str = "", category: str = "",
-            kind: str = "", q: str = "", uncat: str = "", page: int = Query(1, ge=1),
-            all_time: str = "", saved: str = "", error: str = "", edit: str = "",
-            user: User = Depends(require_user), db: Session = Depends(get_session)):
-    start, end, key = _month(m, db)
-    every = all_time == "1"
+TX_FLASH = ("saved", "error", "applied", "hint")   # не фильтры, в путь возврата не идут
+
+
+def _tx_view(db: Session, user: User, p: dict) -> dict:
+    """Список операций по фильтрам p — тому, что стоит в адресной строке.
+
+    Вынесено из страницы отдельно, потому что этот же кусок отдаётся в ответ на
+    каждое действие со списком: htmx подменяет только его, страница целиком не
+    перезагружается и выставленные фильтры остаются на месте.
+    """
+    account, category = p.get("account", ""), p.get("category", "")
+    kind, q, uncat = p.get("kind", ""), p.get("q", ""), p.get("uncat", "")
+    start, end, key = _month(p.get("m"), db)
+    every = p.get("all_time") == "1"
 
     conds = []
     if not every:
@@ -145,7 +162,8 @@ def tx_page(request: Request, m: str | None = None, account: str = "", category:
 
     total = int(db.scalar(select(func.count()).select_from(FinTx).where(*conds)) or 0)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
-    page = min(page, pages)
+    page = min(int(p["page"]) if str(p.get("page", "")).isdigit() else 1, pages)
+    page = max(page, 1)
     rows = list(db.scalars(
         select(FinTx).where(*conds)
         .order_by(FinTx.day.desc(), FinTx.id.desc())
@@ -157,24 +175,55 @@ def tx_page(request: Request, m: str | None = None, account: str = "", category:
         .where(*conds).where(FinTx.excluded.is_(False))
         .group_by(FinTx.kind)).all())
 
-    editing = None
-    if edit.isdigit():
-        editing = db.get(FinTx, int(edit))
+    edit = p.get("edit", "")
+    editing = db.get(FinTx, int(edit)) if edit.isdigit() else None
 
     # Ссылки листания должны сохранять фильтры, иначе вторая страница «всех расходов
     # за год» молча превращается в первую страницу без фильтров
-    qs = "&".join(f"{k}={v}" for k, v in request.query_params.items()
-                  if k not in ("page", "saved", "error", "edit") and v)
+    keep = [(k, v) for k, v in p.items() if k not in TX_FLASH and k != "edit" and v]
+    qs = urlencode([(k, v) for k, v in keep if k != "page"])
+    back = f"/fin/tx?{urlencode(keep)}" if keep else "/fin/tx"
 
-    return templates.TemplateResponse(request, "fin/tx.html", _ctx(
-        db, user=user, rows=rows, month=key, months_have=fin.available_months(db),
+    return dict(
+        user=user, rows=rows, month=key, months_have=fin.available_months(db),
         all_time=every, page=page, pages=pages, total=total,
         income_sum=float(sums.get("income") or 0), expense_sum=float(sums.get("expense") or 0),
         accounts=fin.accounts(db, with_archived=True), cats=fin.categories(db),
         f={"account": account, "category": category, "kind": kind, "q": q, "uncat": uncat},
-        editing=editing, saved=saved, error=error, qs=qs,
+        editing=editing, qs=qs, back=back,
+        saved=p.get("saved", ""), error=p.get("error", ""),
+        applied=p.get("applied", ""), hint=p.get("hint", ""),
         today=date.today().isoformat(), currencies=fx.CURRENCIES,
-    ))
+    )
+
+
+@router.get("/tx", response_class=HTMLResponse)
+def tx_page(request: Request, user: User = Depends(require_user),
+            db: Session = Depends(get_session)):
+    ctx = _tx_view(db, user, dict(request.query_params))
+    return templates.TemplateResponse(request, "fin/tx.html", _ctx(db, **ctx))
+
+
+def _after(request: Request, db: Session, user: User, back: str, show: int | None = None,
+           **flash):
+    """Ответ на действие со списком: правку, удаление, категорию.
+
+    Обычному браузеру — переход на тот же адрес с теми же фильтрами. htmx-запросу —
+    один перерисованный кусок страницы: фильтры, поиск и выбранный месяц человек
+    выставил руками, и терять их после каждой галочки нельзя.
+    """
+    if request.headers.get("HX-Request") != "true":
+        return _redirect(back, **flash)
+    p = dict(parse_qsl(back.partition("?")[2]))
+    p.update({k: str(v) for k, v in flash.items() if v not in (None, "")})
+    ctx = _tx_view(db, user, p)
+    if show is not None and all(r.id != show for r in ctx["rows"]):
+        ctx["hint"] = "операция не подходит под фильтр — в списке её не видно"
+    resp = templates.TemplateResponse(request, "fin/_tx_live.html", _ctx(db, **ctx))
+    # Адресная строка должна остаться честной: обновление страницы по F5 покажет то
+    # же, что и сейчас на экране, вместе с фильтрами
+    resp.headers["HX-Push-Url"] = ctx["back"]
+    return resp
 
 
 def _tx_form(db: Session, account: str, day: str, amount: str, currency: str,
@@ -194,35 +243,38 @@ def _tx_form(db: Session, account: str, day: str, amount: str, currency: str,
 
 
 @router.post("/tx/add")
-def tx_add(account: str = Form(""), day: str = Form(""), amount: str = Form(""),
-           currency: str = Form(""), kind: str = Form("expense"),
+def tx_add(request: Request, account: str = Form(""), day: str = Form(""),
+           amount: str = Form(""), currency: str = Form(""), kind: str = Form("expense"),
            category: str = Form(""), note: str = Form(""), back: str = Form("/fin/tx"),
            user: User = Depends(require_user), db: Session = Depends(get_session)):
     parsed = _tx_form(db, account, day, amount, currency, kind)
     if isinstance(parsed, str):
-        return _redirect(back, error=parsed)
+        return _after(request, db, user, back, error=parsed)
     acc, d, value, cur, k = parsed
     tx = fin.add_tx(db, account=acc, day=d, kind=k, amount=value, currency=cur,
                     category_id=int(category) if category.isdigit() else None,
                     note=note.strip(), source="manual")
     if tx is None:
-        return _redirect(back, error="такая операция уже записана")
+        return _after(request, db, user, back, error="такая операция уже записана")
     if tx.amount_base is None:
-        return _redirect(back, error="записано, но курс ЦБ недоступен — пересчитайте позже")
-    return _redirect(back, saved="1", m=d.strftime("%Y-%m"))
+        return _after(request, db, user, back,
+                      error="записано, но курс ЦБ недоступен — пересчитайте позже")
+    # Месяц переключается на месяц операции: иначе запись «за прошлый раз» уходит
+    # в невидимый период и выглядит как несохранённая
+    return _after(request, db, user, back, show=tx.id, saved="1", m=d.strftime("%Y-%m"))
 
 
 @router.post("/tx/{tid}/edit")
-def tx_edit(tid: int, account: str = Form(""), day: str = Form(""), amount: str = Form(""),
-            currency: str = Form(""), kind: str = Form("expense"), category: str = Form(""),
-            note: str = Form(""), back: str = Form("/fin/tx"),
+def tx_edit(request: Request, tid: int, account: str = Form(""), day: str = Form(""),
+            amount: str = Form(""), currency: str = Form(""), kind: str = Form("expense"),
+            category: str = Form(""), note: str = Form(""), back: str = Form("/fin/tx"),
             user: User = Depends(require_user), db: Session = Depends(get_session)):
     tx = db.get(FinTx, tid)
     if tx is None:
-        return _redirect(back, error="операция не найдена")
+        return _after(request, db, user, back, error="операция не найдена")
     parsed = _tx_form(db, account, day, amount, currency, kind)
     if isinstance(parsed, str):
-        return _redirect(back, error=parsed, edit=tid)
+        return _after(request, db, user, back, error=parsed, edit=tid)
     acc, d, value, cur, k = parsed
     tx.account_id, tx.day, tx.kind, tx.amount, tx.currency = acc.id, d, k, value, cur
     tx.category_id = int(category) if category.isdigit() else None
@@ -232,22 +284,22 @@ def tx_edit(tid: int, account: str = Form(""), day: str = Form(""), amount: str 
     tx.amount_base, tx.rate, _ = fin.convert_for(db, value, cur, d)
     tx.base_code = base_currency(db)
     db.commit()
-    return _redirect(back, saved="1")
+    return _after(request, db, user, back, show=tx.id, saved="1")
 
 
 @router.post("/tx/{tid}/delete")
-def tx_delete(tid: int, back: str = Form("/fin/tx"), user: User = Depends(require_user),
-              db: Session = Depends(get_session)):
+def tx_delete(request: Request, tid: int, back: str = Form("/fin/tx"),
+              user: User = Depends(require_user), db: Session = Depends(get_session)):
     tx = db.get(FinTx, tid)
     if tx is not None:
         db.delete(tx)
         db.commit()
-    return _redirect(back, saved="1")
+    return _after(request, db, user, back, saved="1")
 
 
 @router.post("/tx/{tid}/exclude")
-def tx_exclude(tid: int, back: str = Form("/fin/tx"), user: User = Depends(require_user),
-               db: Session = Depends(get_session)):
+def tx_exclude(request: Request, tid: int, back: str = Form("/fin/tx"),
+               user: User = Depends(require_user), db: Session = Depends(get_session)):
     """Убрать операцию из итогов или вернуть обратно.
 
     Ровно для переводов между своими счетами: в выписке они выглядят как расход, но
@@ -258,13 +310,13 @@ def tx_exclude(tid: int, back: str = Form("/fin/tx"), user: User = Depends(requi
     if tx is not None:
         tx.excluded = not tx.excluded
         db.commit()
-    return _redirect(back, saved="1")
+    return _after(request, db, user, back, saved="1")
 
 
 @router.post("/tx/{tid}/categorize")
-def tx_categorize(tid: int, category: str = Form(""), pattern: str = Form(""),
-                  back: str = Form("/fin/tx?uncat=1"), user: User = Depends(require_user),
-                  db: Session = Depends(get_session)):
+def tx_categorize(request: Request, tid: int, category: str = Form(""),
+                  pattern: str = Form(""), back: str = Form("/fin/tx?uncat=1"),
+                  user: User = Depends(require_user), db: Session = Depends(get_session)):
     """Назначить категорию и заодно, если задан образец, создать из этого правило.
 
     Смысл в одном действии: разбирая очередь, человек всё равно видит закономерность
@@ -274,7 +326,7 @@ def tx_categorize(tid: int, category: str = Form(""), pattern: str = Form(""),
     """
     tx = db.get(FinTx, tid)
     if tx is None:
-        return _redirect(back, error="операция не найдена")
+        return _after(request, db, user, back, error="операция не найдена")
     cid = int(category) if category.isdigit() else None
     tx.category_id = cid
     applied = 0
@@ -287,7 +339,7 @@ def tx_categorize(tid: int, category: str = Form(""), pattern: str = Form(""),
         db.commit()
         applied = _apply_rules_to_uncategorized(db)
     db.commit()
-    return _redirect(back, saved="1", applied=applied or "")
+    return _after(request, db, user, back, saved="1", applied=applied or "")
 
 
 def _apply_rules_to_uncategorized(db: Session) -> int:
