@@ -360,16 +360,26 @@ def header_labels(rows: list[list], m: Mapping) -> list[str]:
 
 
 def parse_rows(rows: list[list], m: Mapping, default_currency: str,
-               limit: int | None = None) -> list[Row]:
+               limit: int | None = None, expenses_only: bool = True) -> list[Row]:
     """Разбирает строки данных по сопоставлению. Ошибочные не выбрасываются, а
-    возвращаются с заполненным error: человек должен видеть, что не прочиталось."""
+    возвращаются с заполненным error: человек должен видеть, что не прочиталось.
+
+    Из выписки берутся только расходы. Приход в файле — это в основном перекладывание
+    собственных денег: возвраты, переводы с других своих счетов, обмен валюты. Считать
+    это доходом значит завысить и доходы, и сбережения; настоящие доходы заводятся
+    руками, их за месяц единицы. Строки прихода не выбрасываются молча — они
+    остаются в списке с пометкой, чтобы в предпросмотре было видно, что с ними стало.
+    """
     out: list[Row] = []
     for i, raw in enumerate(data_rows(rows, m)):
         if limit is not None and len(out) >= limit:
             break
         if all(c is None or str(c).strip() == "" for c in raw):
             continue
-        out.append(_parse_one(i, raw, m, default_currency))
+        r = _parse_one(i, raw, m, default_currency)
+        if expenses_only and not r.error and not r.skip and r.kind == "income":
+            r.skip = "приход — в выписке не учитывается"
+        out.append(r)
     return out
 
 
