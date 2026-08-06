@@ -43,10 +43,12 @@
                    'settings': 'Настройки', 'calc': 'Калькулятор'} %}
   {% if space == 'fin' %}
   {% set PAGES = [('/fin', 'fin_over', 'Обзор'), ('/fin/tx', 'fin_tx', 'Операции'),
+                  ('/fin/money', 'fin_money', 'Деньги сейчас'),
                   ('/fin/import', 'fin_imp', 'Загрузка выписки'),
                   ('/fin/categories', 'fin_cat', 'Категории'),
                   ('/fin/accounts', 'fin_acc', 'Счета')] %}
-  {% set TITLES = {'fin_over': 'Обзор', 'fin_tx': 'Операции', 'fin_imp': 'Загрузка выписки',
+  {% set TITLES = {'fin_over': 'Обзор', 'fin_tx': 'Операции', 'fin_money': 'Деньги сейчас',
+                   'fin_imp': 'Загрузка выписки',
                    'fin_cat': 'Категории', 'fin_acc': 'Счета'} %}
   {% endif %}
   <details class="menu" id="nav-menu">

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Деньги сейчас — Личные финансы{% endblock %}
+{% set active = 'fin_money' %}
+
+{% block content %}
+<h1 class="page">Деньги сейчас</h1>
+<div class="page-sub">
+  Сколько лежит на счетах и сколько наличными. Записывается руками: из операций
+  остаток не считается — для этого в базе должна была бы быть каждая до последней
+  покупка, а выписки приходят раз в месяц. Здесь просто число, которое видно в банке.
+</div>
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px"><span class="ic">✓</span><span>Записано</span></div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if not accounts %}
+<div class="alert warning" style="margin-bottom:16px">
+  <span class="ic">▲</span>
+  <span>Сначала заведите <a href="/fin/accounts">счета</a> — карты, вклады, наличные.
+    Записывать остаток не на чем.</span>
+</div>
+{% elif not has_cash %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">·</span>
+  <span>Для наличных заведите <a href="/fin/accounts">счёт</a> с названием
+    «Наличные» — тогда они встанут в этот же список и войдут в общий итог.</span>
+</div>
+{% endif %}
+
+{% if now %}
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Всего денег</div>
+    <div class="value">{{ now.total | money(base) }}</div>
+    <div class="sub">
+      на {{ now.day | dmy }}
+      {%- if now.no_rate %} · без курса записей: {{ now.no_rate }}{% endif %}
+    </div>
+  </div>
+  <div class="tile">
+    <div class="label">Изменение</div>
+    {% if prev %}
+    {% set d = now.total - prev.total %}
+    <div class="value {{ 'up' if d > 0 else ('down' if d < 0 else '') }}">
+      {{ '+' if d > 0 }}{{ d | money(base) }}
+    </div>
+    <div class="sub">с {{ prev.day | dmy }}, когда было {{ prev.total | money(base) }}</div>
+    {% else %}
+    <div class="value sm">—</div>
+    <div class="sub">не с чем сравнивать: это первая запись</div>
+    {% endif %}
+  </div>
+  <div class="tile">
+    <div class="label">Записей</div>
+    <div class="value sm">{{ rows | length }}</div>
+    <div class="sub">дат, на которые записаны остатки</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Записать, сколько есть</h2>
+  <div class="body">
+    <form method="post" action="/fin/money/save">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
+        <label>
+          <span class="fl">На какое число</span>
+          <input type="date" name="day" value="{{ day }}" max="{{ today }}" style="width:160px">
+        </label>
+      </div>
+      <div class="moneygrid">
+        {% for a in accounts %}
+        <label>
+          <span class="fl">
+            {{ a.name }} · {{ a.currency }}
+            {%- if a.id in prefilled %} <span class="meta">(с прошлой записи)</span>{% endif %}
+          </span>
+          <input type="text" name="amount_{{ a.id }}" inputmode="decimal"
+                 value="{{ '%.2f' % values[a.id] if values[a.id] is not none else '' }}"
+                 placeholder="0,00">
+        </label>
+        {% endfor %}
+      </div>
+      <button class="btn primary" type="submit" {{ 'disabled' if not accounts }}>Записать</button>
+    </form>
+    <div class="note">
+      Поля подставлены с прошлой записи: обычно меняется один счёт, остальные
+      достаточно подтвердить. Пустое поле стирает запись по этому счёту за выбранное
+      число — так убирается опечатка.
+    </div>
+    <div class="note">
+      Запись за одно и то же число не задваивается, а уточняется. Суммы сведены в
+      {{ base }} по курсу <b>на дату записи</b> и в истории больше не пересчитываются:
+      иначе прошлогодний остаток менялся бы каждый день вместе с курсом, и по истории
+      нельзя было бы понять, копятся деньги или тают.
+    </div>
+  </div>
+</div>
+
+{% if rows | length > 1 %}
+<div class="card" style="margin-bottom:16px">
+  <div class="chart-head"><h2>Как менялось</h2></div>
+  <div class="chart-box" style="height:240px"><canvas id="fin-money"></canvas></div>
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="card">
+  <h2>История</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Когда</th>
+          {% for a in accounts %}<th class="num">{{ a.name }}</th>{% endfor %}
+          <th class="num">Всего в {{ base }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in rows %}
+        <tr>
+          <td class="meta">{{ s.day | dmy }}</td>
+          {% for a in accounts %}
+          <td class="num {{ 'meta' if a.id in s.carried }}"
+              title="{{ 'перенесено с прошлой записи — в этот день счёт не трогали' if a.id in s.carried }}">
+            {% if a.id in s.amounts %}
+              {{ s.amounts[a.id] | money(a.currency) }}
+            {% else %}—{% endif %}
+          </td>
+          {% endfor %}
+          <td class="num"><b>{{ s.total | money(base) }}</b></td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn ghost" href="/fin/money?day={{ s.day.isoformat() }}"
+               title="Поправить запись за это число">✎</a>
+            <form method="post" action="/fin/money/delete" style="display:inline"
+                  onsubmit="return confirm('Убрать запись за {{ s.day | dmy }} целиком?')">
+              <input type="hidden" name="day" value="{{ s.day.isoformat() }}">
+              <button class="btn ghost danger" type="submit" title="Убрать запись за эту дату">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body">
+    <div class="note" style="margin-top:0">
+      Приглушённая сумма перенесена с прошлой записи: в этот день счёт не трогали, и
+      в итог он всё равно входит — иначе общая цифра проваливалась бы просто оттого,
+      что человек не переписал заново все счета.
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    Пока ничего не записано.<br>
+    Впишите суммы выше — со второй записи появится история и график.
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if rows | length > 1 %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+(function () {
+  const SERIES = {{ series | tojson }};
+  const BASE = {{ base | tojson }};
+  const vals = SERIES.map((r) => r.total);
+  const opts = ChartKit.options(vals, (c) => " " + ChartKit.money(c.parsed.y, BASE));
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(vals, BASE);
+  new Chart(document.getElementById("fin-money"), {
+    type: "line",
+    data: {
+      labels: SERIES.map((r) => r.day),
+      datasets: [{
+        label: "Всего денег",
+        data: vals,
+        borderColor: ChartKit.css("--series-1"),
+        backgroundColor: ChartKit.css("--series-1"),
+        borderWidth: 2, tension: .25, pointRadius: 3,
+      }],
+    },
+    options: opts,
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

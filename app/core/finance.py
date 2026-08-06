@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import fx
-from app.db.models import FinAccount, FinCategory, FinRule, FinTx
+from app.db.models import (FinAccount, FinBalance, FinCategory, FinRule, FinTx)
 from app.db.prefs import base_currency, get_prefs, save_prefs
 
 log = logging.getLogger(__name__)
@@ -238,19 +238,25 @@ def add_tx(db: Session, *, account: FinAccount, day: date, kind: str, amount: fl
 
 
 def recompute_base(db: Session, only_missing: bool = False) -> tuple[int, int]:
-    """Пересчитывает amount_base у операций. Возвращает (пересчитано, не удалось).
+    """Пересчитывает amount_base у операций и остатков. Возвращает (сделано, не смогли).
 
     Нужно в двух случаях: сменилась валюта отчётов (иначе в одной таблице сложились
     бы суммы, пересчитанные в разные валюты) и досчитать строки, записанные без связи
     с ЦБ.
+
+    Остатки идут вместе с операциями намеренно: забыть их значило бы, что после смены
+    валюты «всего денег» складывает рубли с евро — число получится правдоподобным и
+    неверным, а заметить это почти нельзя.
     """
     base = base_currency(db)
-    q = select(FinTx)
-    if only_missing:
-        q = q.where(FinTx.amount_base.is_(None))
-    else:
-        q = q.where((FinTx.base_code != base) | (FinTx.amount_base.is_(None)))
-    rows = list(db.scalars(q))
+    rows: list = []
+    for model in (FinTx, FinBalance):
+        q = select(model)
+        if only_missing:
+            q = q.where(model.amount_base.is_(None))
+        else:
+            q = q.where((model.base_code != base) | (model.amount_base.is_(None)))
+        rows += list(db.scalars(q))
     # Тот же приём, что при загрузке выписки: курсы за весь период сразу, одним
     # запросом на валюту. Пересчёт тысячи операций иначе означает тысячу походов в ЦБ.
     days = [t.day for t in rows if t.day is not None]
@@ -510,3 +516,98 @@ def available_months(db: Session) -> list[str]:
     ym = func.strftime("%Y-%m", FinTx.day)
     return [m for (m,) in db.execute(
         select(ym).select_from(FinTx).group_by(ym).order_by(ym.desc())).all() if m]
+
+
+# --------------------------------------------------------------------------------------
+# Сколько денег есть сейчас
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class Snapshot:
+    """Одна дата, на которую записаны остатки: суммы по счетам и общий итог."""
+    day: date
+    amounts: dict[int, float] = field(default_factory=dict)        # счёт -> сумма в его валюте
+    base: dict[int, float | None] = field(default_factory=dict)    # счёт -> сумма в валюте отчётов
+    carried: set[int] = field(default_factory=set)                 # взято с прошлой даты
+    total: float = 0.0
+    no_rate: int = 0
+
+
+def balance_dates(db: Session) -> list[date]:
+    """Даты, на которые что-то записано, от свежих к старым."""
+    return [d for (d,) in db.execute(
+        select(FinBalance.day).group_by(FinBalance.day)
+        .order_by(FinBalance.day.desc())).all()]
+
+
+def latest_balances(db: Session) -> dict[int, FinBalance]:
+    """Последняя записанная сумма по каждому счёту — ею заполняется форма.
+
+    Вписывать заново все счета каждый раз человек не станет: поменялся один, а
+    остальные надо подтвердить. Поэтому форма открывается с прошлыми числами.
+    """
+    out: dict[int, FinBalance] = {}
+    for b in db.scalars(select(FinBalance).order_by(FinBalance.day)):
+        out[b.account_id] = b        # порядок по возрастанию — остаётся самая свежая
+    return out
+
+
+def save_balances(db: Session, day: date, amounts: dict[int, float | None]) -> int:
+    """Записать суммы на дату. None — стереть запись для этого счёта.
+
+    Пересчёт в валюту отчётов берётся по курсу той же даты и замораживается: история
+    остатков не должна шевелиться от сегодняшнего курса.
+    """
+    n = 0
+    for acc in accounts(db, with_archived=True):
+        if acc.id not in amounts:
+            continue
+        value = amounts[acc.id]
+        row = db.scalar(select(FinBalance).where(FinBalance.account_id == acc.id,
+                                                 FinBalance.day == day))
+        if value is None:
+            if row is not None:
+                db.delete(row)
+                n += 1
+            continue
+        if row is None:
+            row = FinBalance(account_id=acc.id, day=day)
+            db.add(row)
+        row.amount = round(float(value), 2)
+        row.currency = acc.currency
+        row.amount_base, row.rate, _ = convert_for(db, row.amount, acc.currency, day)
+        row.base_code = base_currency(db)
+        n += 1
+    db.commit()
+    return n
+
+
+def snapshots(db: Session, limit: int = 24) -> list[Snapshot]:
+    """История остатков: по одной строке на дату, от свежих к старым.
+
+    Если на дату записан не каждый счёт, берётся его последняя известная сумма с
+    более ранней даты и помечается как перенесённая. Иначе итог провалился бы на
+    сумму счёта, который просто не трогали, и график сбережений врал бы вниз.
+    """
+    rows = list(db.scalars(select(FinBalance).order_by(FinBalance.day)))
+    if not rows:
+        return []
+    out: list[Snapshot] = []
+    carry: dict[int, FinBalance] = {}
+    for day in sorted({r.day for r in rows}):
+        today = {r.account_id: r for r in rows if r.day == day}
+        carry.update(today)
+        s = Snapshot(day=day)
+        for aid, r in carry.items():
+            s.amounts[aid] = r.amount
+            s.base[aid] = r.amount_base
+            if aid not in today:
+                s.carried.add(aid)
+            if r.amount_base is None:
+                s.no_rate += 1
+            else:
+                s.total += r.amount_base
+        s.total = round(s.total, 2)
+        out.append(s)
+    out.reverse()
+    return out[:limit]

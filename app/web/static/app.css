@@ -594,3 +594,12 @@ table.positions .pick input { width: 16px; height: 16px; accent-color: var(--ser
 /* Кнопка без отметок неактивна, но остаётся на месте: если её прятать, полоса
    прыгает при первой же галочке. */
 .bulkbar button[disabled] { opacity: .45; cursor: default; }
+
+/* Форма остатков: по полю на счёт. Сетка, а не гибкая строка — поля должны стоять
+   столбиком одинаковой ширины, чтобы суммы читались вертикально, как в банке. */
+.moneygrid {
+  display: grid; gap: 10px 14px; margin-bottom: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.moneygrid input { width: 100%; text-align: right; font-variant-numeric: tabular-nums; }
+.moneygrid .fl .meta { font-weight: 400; }

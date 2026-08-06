@@ -39,6 +39,14 @@
     {% else %}
       Выберите другой месяц или <a href="/fin/import">загрузите выписку</a>.
     {% endif %}
+    {% if money %}
+    {# Остатки записаны руками и к операциям не привязаны: без этой строки экран
+       говорил бы «ничего нет» человеку, который только что вписал свои деньги. #}
+    <div style="margin-top:14px">
+      Денег на {{ money.day | dmy }}: <b>{{ money.total | money(base) }}</b> —
+      <a href="/fin/money">раздел «Деньги сейчас»</a>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% else %}
@@ -83,6 +91,23 @@
       {% else %}доходов за месяц не записано{% endif %}
     </div>
   </div>
+
+  {% if money %}
+  {# Остаток записан руками и к месяцу не привязан: это ответ на вопрос «сколько
+     есть», тогда как остальные плитки отвечают «сколько ушло». #}
+  <div class="tile">
+    <div class="label">Денег сейчас</div>
+    <div class="value">{{ money.total | money(base) }}</div>
+    <div class="sub">
+      <a href="/fin/money">на {{ money.day | dmy }}</a>
+      {%- if money_prev %}{% set d = money.total - money_prev.total %} ·
+        <span class="{{ 'up' if d > 0 else ('down' if d < 0 else '') }}">
+          {{ '▲' if d > 0 else ('▼' if d < 0 else '·') }} {{ d | abs | money(base) }}
+        </span> с {{ money_prev.day | dmy }}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <div class="tile">
     <div class="label">Операций за месяц</div>

@@ -444,11 +444,11 @@ class FxRate(Base):
 class FinAccount(Base):
     """Счёт: карта конкретного банка, наличные, счёт в другой валюте.
 
-    Остатки не ведутся сознательно. Остаток требует, чтобы в базу попала каждая до
-    последней операция и начальное сальдо, иначе он тихо расходится с реальностью и
-    начинает врать — а выписки заливаются раз в месяц и не всегда полностью. Здесь
-    счёт нужен для другого: сказать, из какой выписки пришла операция и в какой она
-    валюте, и дать разбивку расходов по банкам.
+    Из операций остаток не считается: это требовало бы, чтобы в базе была каждая до
+    последней операция и начальное сальдо, иначе цифра тихо расходится с реальностью.
+    Счёт здесь нужен для другого: сказать, из какой выписки пришла операция и в какой
+    она валюте, и дать разбивку расходов по банкам. Сколько на счёте лежит сейчас —
+    отдельная запись руками, см. FinBalance.
     """
     __tablename__ = "fin_accounts"
 
@@ -595,6 +595,38 @@ class FinRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     category: Mapped["FinCategory | None"] = relationship(lazy="joined")
+
+
+class FinBalance(Base):
+    """Сколько денег есть сейчас: остаток на счёте или наличными на конкретную дату.
+
+    Записывается руками и из операций не выводится. Остаток, посчитанный по выписке,
+    требовал бы, чтобы в базе была каждая до последней операция и начальное сальдо —
+    а выписки заливаются раз в месяц и не всегда полностью, так что он тихо расходился
+    бы с реальностью. Здесь человек просто вписывает число, которое видит в банке.
+
+    Пересчёт в валюту отчётов записан рядом, как и у операций: иначе прошлогодний
+    остаток менялся бы каждый день вместе с курсом, и по истории нельзя было бы
+    понять, копятся деньги или нет.
+    """
+    __tablename__ = "fin_balances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("fin_accounts.id", ondelete="CASCADE"), index=True)
+    day: Mapped[datetime] = mapped_column(Date, index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)   # в валюте счёта
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    amount_base: Mapped[float | None] = mapped_column(Float, nullable=True)
+    base_code: Mapped[str] = mapped_column(String(3), default="")
+    rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    account: Mapped["FinAccount"] = relationship(lazy="joined")
+
+    # Одна запись на счёт и дату: вписал сумму второй раз за день — это уточнение,
+    # а не вторая пачка денег.
+    __table_args__ = (UniqueConstraint("account_id", "day", name="uq_fin_balance_day"),)
 
 
 class KV(Base):

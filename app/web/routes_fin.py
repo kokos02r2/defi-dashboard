@@ -29,8 +29,8 @@ from app.core import finimport as imp
 from app.core import fx
 from app.core.fmt import plural
 from app.db.base import get_session
-from app.db.models import (KV, FinAccount, FinCategory, FinImportBatch, FinRule, FinTx,
-                           User, utcnow)
+from app.db.models import (KV, FinAccount, FinBalance, FinCategory, FinImportBatch,
+                           FinRule, FinTx, User, utcnow)
 from app.db.prefs import base_currency, save_prefs
 from app.web.templating import templates
 
@@ -113,6 +113,9 @@ def overview(request: Request, m: str | None = None, user: User = Depends(requir
 
     expense_rows = fin.by_category(db, start, end, "expense")
     income_rows = fin.by_category(db, start, end, "income")
+    # Записанные руками остатки — к выбранному месяцу не привязаны: показываем
+    # последнее, что известно, иначе плитка пропадала бы при листании месяцев
+    money = fin.snapshots(db, limit=2)
 
     return templates.TemplateResponse(request, "fin/overview.html", _ctx(
         db, user=user, month=key, months_have=fin.available_months(db),
@@ -121,6 +124,7 @@ def overview(request: Request, m: str | None = None, user: User = Depends(requir
         by_account=fin.by_account(db, start, end, "expense"),
         top=fin.top_expenses(db, start, end, limit=10),
         recurring=fin.recurring(db, months=6)[:12],
+        money=money[0] if money else None, money_prev=money[1] if len(money) > 1 else None,
         series=[{"month": r.month, "income": round(r.income, 2),
                  "expense": round(r.expense, 2), "net": round(r.net, 2)} for r in months],
     ))
@@ -722,6 +726,87 @@ def rules_delete(rid: int, user: User = Depends(require_user),
 
 
 # --------------------------------------------------------------------------------------
+# Сколько денег есть сейчас
+# --------------------------------------------------------------------------------------
+
+@router.get("/money", response_class=HTMLResponse)
+def money_page(request: Request, day: str = "", saved: str = "", error: str = "",
+               user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Остатки по счетам и наличными на дату.
+
+    Отдельный экран, а не колонка в счетах: тут своя история и свой смысл —
+    расходы отвечают, куда ушло, остатки отвечают, сколько осталось.
+    """
+    d = imp.parse_day(day) or date.today()
+    rows = fin.snapshots(db, limit=36)
+    last = fin.latest_balances(db)
+    on_day = {b.account_id: b for b in db.scalars(
+        select(FinBalance).where(FinBalance.day == d))}
+    accs = fin.accounts(db)
+    # Поле заполняется тем, что уже записано на эту дату, иначе — прошлым значением:
+    # менять приходится один счёт из пяти, остальные достаточно подтвердить
+    values = {a.id: (on_day[a.id].amount if a.id in on_day
+                     else (last[a.id].amount if a.id in last else None)) for a in accs}
+    prefilled = {a.id for a in accs if a.id not in on_day and a.id in last}
+    return templates.TemplateResponse(request, "fin/money.html", _ctx(
+        db, user=user, accounts=accs, day=d.isoformat(), today=date.today().isoformat(),
+        values=values, prefilled=prefilled, rows=rows,
+        now=rows[0] if rows else None, prev=rows[1] if len(rows) > 1 else None,
+        series=[{"day": s.day.isoformat(), "total": s.total} for s in reversed(rows)],
+        has_cash=any("налич" in a.name.lower() for a in accs),
+        saved=saved, error=error))
+
+
+@router.post("/money/save")
+async def money_save(request: Request, day: str = Form(""),
+                     user: User = Depends(require_user),
+                     db: Session = Depends(get_session)):
+    """Записать суммы со всей формы разом.
+
+    Поля читаются из сырой формы, а не объявлены по одному: счетов сколько угодно,
+    и каждый приходит полем «amount_<id>». Пустое поле стирает запись за эту дату —
+    иначе от опечатки нельзя было бы избавиться.
+    """
+    d = imp.parse_day(day) or date.today()
+    if d > date.today():
+        return _redirect("/fin/money", error="дата в будущем", day=d.isoformat())
+    form = await request.form()
+    amounts: dict[int, float | None] = {}
+    bad: list[str] = []
+    for key, raw in form.items():
+        if not key.startswith("amount_") or not key[7:].isdigit():
+            continue
+        aid = int(key[7:])
+        text = str(raw).strip()
+        if not text:
+            amounts[aid] = None
+            continue
+        value = imp.parse_number(text)
+        if value is None:
+            bad.append(text)
+            continue
+        amounts[aid] = abs(value)
+    if bad:
+        return _redirect("/fin/money", day=d.isoformat(),
+                         error=f"не похоже на сумму: {', '.join(bad[:3])}")
+    n = fin.save_balances(db, d, amounts)
+    return _redirect("/fin/money", saved="1" if n else "", day=d.isoformat())
+
+
+@router.post("/money/delete")
+def money_delete(day: str = Form(""), user: User = Depends(require_user),
+                 db: Session = Depends(get_session)):
+    """Убрать всю запись за дату — вписал не тот день, и он мешает в истории."""
+    d = imp.parse_day(day)
+    if d is None:
+        return _redirect("/fin/money", error="не разобрана дата")
+    for row in db.scalars(select(FinBalance).where(FinBalance.day == d)):
+        db.delete(row)
+    db.commit()
+    return _redirect("/fin/money", saved="1")
+
+
+# --------------------------------------------------------------------------------------
 # Счета и настройки раздела
 # --------------------------------------------------------------------------------------
 
@@ -820,7 +905,7 @@ def settings_currency(currency: str = Form("EUR"), user: User = Depends(require_
         return _redirect("/fin/accounts")
     save_prefs(db, fin_base_currency=cur)
     done, failed = fin.recompute_base(db)
-    msg = f"пересчитано операций: {done}"
+    msg = f"пересчитано записей: {done}"
     if failed:
         msg += f", без курса осталось: {failed}"
     return _redirect("/fin/accounts", saved="1", error="" if not failed else msg)
