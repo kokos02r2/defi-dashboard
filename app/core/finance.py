@@ -42,6 +42,26 @@ SEED_INCOME = [
     "Подарки", "Прочее",
 ]
 
+# Образцы переводов между своими счетами из выписок Revolut и Райффайзена. Без них
+# первая же загрузка выписки завышает расходы в разы: перекладывание денег со счёта
+# на счёт, обмен валюты и вывод на свою же карту выглядят в файле как обычные траты,
+# а их там сотни. Правила заводятся с флагом «не учитывать», а не категорией: такие
+# строки не расход и не доход, им нечего делать в отчётах.
+SEED_SKIP_RULES = [
+    "рублевый перевод между счетами",     # Райффайзен: между своими счетами
+    "перевели между своими счетами",
+    "пополнение своего счета",
+    "пополнение брокерского счета",
+    "пополнение счета",                   # Revolut: с собственной карты
+    "обменено на",                        # Revolut: обмен валюты внутри счёта
+    # Копилка Revolut. Образцы длиннее, чем просто «сбережения с мгновенным доступом»,
+    # намеренно: тем же словом называются начисленные по ней проценты, а это
+    # настоящий доход, и отсеивать его нельзя.
+    "получатель: eur сбережения",
+    "с карты eur сбережения",
+    "transfer from revolut digital assets",
+]
+
 
 # --------------------------------------------------------------------------------------
 # Справочники
@@ -66,6 +86,27 @@ def seed_categories(db: Session) -> int:
             added += 1
     db.commit()
     save_prefs(db, fin_seeded=True)
+    return added
+
+
+def seed_rules(db: Session) -> int:
+    """Заводит правила «не учитывать» для переводов между своими счетами.
+
+    Отдельный флаг от категорий: базы, где категории уже посеяны, тоже должны получить
+    правила — иначе первая выписка снова разъедется. Удалённое правило не вернётся:
+    флаг взводится один раз, независимо от того, сколько строк реально добавилось.
+    """
+    if get_prefs(db).get("fin_rules_seeded"):
+        return 0
+    added = 0
+    for pattern in SEED_SKIP_RULES:
+        exists = db.scalar(select(FinRule.id).where(FinRule.pattern == pattern))
+        if exists:
+            continue
+        db.add(FinRule(pattern=pattern, category_id=None, skip=True))
+        added += 1
+    db.commit()
+    save_prefs(db, fin_rules_seeded=True)
     return added
 
 
@@ -209,8 +250,19 @@ def recompute_base(db: Session, only_missing: bool = False) -> tuple[int, int]:
         q = q.where(FinTx.amount_base.is_(None))
     else:
         q = q.where((FinTx.base_code != base) | (FinTx.amount_base.is_(None)))
+    rows = list(db.scalars(q))
+    # Тот же приём, что при загрузке выписки: курсы за весь период сразу, одним
+    # запросом на валюту. Пересчёт тысячи операций иначе означает тысячу походов в ЦБ.
+    days = [t.day for t in rows if t.day is not None]
+    if days:
+        try:
+            fx.prefetch(db, {t.currency for t in rows if t.currency} | {base},
+                        min(days), max(days))
+        except Exception as e:  # noqa: BLE001 — ускорение не должно ронять пересчёт
+            log.warning("[fin] курсы за период не загружены: %s", e)
+
     done = failed = 0
-    for tx in db.scalars(q):
+    for tx in rows:
         value, rate, _ = convert_for(db, tx.amount, tx.currency, tx.day)
         if value is None:
             failed += 1

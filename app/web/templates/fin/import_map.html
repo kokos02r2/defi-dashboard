@@ -29,6 +29,13 @@
     сопоставление колонок: скорее всего, перепутаны дата и сумма.
   </span>
 </div>
+{% elif skipped %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">✓</span>
+  <span>{{ skipped }} {{ skipped | plural('строка', 'строки', 'строк') }} не
+    {{ skipped | plural('запишется', 'запишутся', 'запишется') }}: отменённые банком
+    операции и строки с нулевой суммой. Так и должно быть.</span>
+</div>
 {% endif %}
 
 <div class="card" style="margin-bottom:16px">
@@ -99,6 +106,24 @@
           {% endfor %}
         </select>
       </label>
+      <label>
+        <span class="fl">Комиссия</span>
+        <select name="fee" style="min-width:130px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.fee == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Состояние</span>
+        <select name="state" style="min-width:130px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.state == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label class="check-inline">
         <input type="checkbox" name="expense_negative" value="1"
                {{ 'checked' if m.expense_negative }}>
@@ -112,6 +137,18 @@
       доход; галочка ниже говорит, каким знаком банк помечает расход. Ошибка здесь
       переворачивает всё наоборот, поэтому посмотрите на предпросмотр: расходов почти
       всегда больше, чем доходов.
+    </div>
+    <div class="note">
+      «Комиссия» — отдельная колонка у банков, которые берут плату сверх суммы операции:
+      она прибавляется к расходу, а строка, состоящая из одной комиссии, записывается
+      расходом целиком. Если в вашей выписке комиссия уже включена в сумму, поставьте
+      здесь «нет», иначе она посчитается дважды.
+    </div>
+    <div class="note">
+      «Состояние» — колонка со статусом операции. Отменённые и отклонённые строки банк
+      держит в выписке наравне с обычными; по этой колонке они не запишутся и не завысят
+      траты. Операции «в обработке» записываются: они обычно доходят, а при следующей
+      загрузке распознаются как повтор.
     </div>
     <div class="note">
       Сопоставление сохраняется на счёте: следующую выписку этого банка дашборд разберёт
@@ -136,14 +173,15 @@
       </thead>
       <tbody>
         {% for r in preview %}
-        <tr class="{{ 'dimmed' if r.error }}">
+        <tr class="{{ 'dimmed' if r.error or r.skip }}">
           <td class="num meta">{{ r.index + 1 }}</td>
           <td>{{ r.day | dmy if r.day else '—' }}</td>
           <td class="meta">
             {% if r.error %}<span class="status warn">{{ r.error }}</span>
+            {% elif r.skip %}<span class="status off">{{ r.skip }}</span>
             {% else %}{{ 'доход' if r.kind == 'income' else 'расход' }}{% endif %}
           </td>
-          <td class="num">{{ r.amount | money(r.currency) if not r.error else '—' }}</td>
+          <td class="num">{{ r.amount | money(r.currency) if not r.error and not r.skip else '—' }}</td>
           <td class="meta">{{ r.currency }}</td>
           <td>{{ r.note or '—' }}</td>
         </tr>

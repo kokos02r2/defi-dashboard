@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +40,16 @@ SYMBOLS = {"EUR": "€", "USD": "$", "RUB": "₽", "GBP": "£", "CHF": "Fr",
 
 ARCHIVE_URL = "https://www.cbr-xml-daily.ru/archive/{y:04d}/{m:02d}/{d:02d}/daily_json.js"
 LATEST_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
+
+# Курс сразу за диапазон дат, одним запросом на валюту. Ради этого и заведён второй
+# источник: выписка за пять лет — это около двух тысяч дат, и по запросу на каждую
+# загрузка идёт больше получаса. Здесь те же официальные курсы приходят за секунду.
+DYNAMIC_URL = ("https://www.cbr.ru/scripts/XML_dynamic.asp"
+               "?date_req1={a}&date_req2={b}&VAL_NM_RQ={cbr_id}")
+# Внутренние коды валют у ЦБ. Списка «по буквенному коду» у динамики нет, поэтому
+# соответствие приходится держать у себя; валюты те же, что предлагает интерфейс.
+CBR_IDS = {"USD": "R01235", "EUR": "R01239", "GBP": "R01035", "CHF": "R01775",
+           "TRY": "R01700J", "KZT": "R01335", "GEL": "R01210", "AED": "R01230"}
 
 # За выходные и праздники курс не публикуется — отступаем назад до рабочего дня.
 # Десяти дней хватает на новогодние каникулы, самый длинный перерыв в году.
@@ -87,6 +98,70 @@ def _load(db: Session, day: date, code: str) -> float | None:
     return db.scalar(select(FxRate.rub).where(FxRate.day == day, FxRate.code == code))
 
 
+_RECORD = re.compile(
+    r'<Record\s+Date="([^"]+)"[^>]*>.*?<Nominal>([^<]+)</Nominal>.*?<Value>([^<]+)</Value>',
+    re.S)
+
+
+def _fetch_range(code: str, start: date, end: date) -> list[tuple[date, float]]:
+    """Курсы одной валюты за диапазон дат. Отдаются только рабочие дни."""
+    url = DYNAMIC_URL.format(a=start.strftime("%d/%m/%Y"), b=end.strftime("%d/%m/%Y"),
+                             cbr_id=CBR_IDS[code])
+    req = urllib.request.Request(url, headers={"User-Agent": "defi-dashboard/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            text = r.read().decode("cp1251", errors="replace")
+    except Exception as e:  # noqa: BLE001 — сеть, таймаут, смена формата
+        raise FxUnavailable(str(e)[:120]) from None
+    out: list[tuple[date, float]] = []
+    for d, nominal, value in _RECORD.findall(text):
+        try:
+            day = datetime.strptime(d, "%d.%m.%Y").date()
+            rub = float(value.replace(",", ".")) / float(nominal.replace(",", "."))
+        except (ValueError, ZeroDivisionError):
+            continue
+        out.append((day, rub))
+    return out
+
+
+def prefetch(db: Session, codes, start: date, end: date) -> int:
+    """Заранее кладёт в кэш курсы всех нужных валют за весь период выписки.
+
+    Вызывается перед разбором файла: иначе каждая новая дата — отдельный поход в сеть,
+    и загрузка выписки за несколько лет висит десятки минут, держа базу занятой.
+    Молча ничего не делает, если сеть недоступна: это ускорение, а не обязательный шаг,
+    и без него всё продолжает работать по-старому, просто медленно.
+    """
+    if start > end:
+        start, end = end, start
+    end = min(end, date.today())
+    loaded = 0
+    for code in sorted({(c or "").upper() for c in codes}):
+        if code == "RUB" or code not in CBR_IDS:
+            continue
+        have = {d for (d,) in db.execute(
+            select(FxRate.day).where(FxRate.code == code,
+                                     FxRate.day >= start, FxRate.day <= end))}
+        # Рабочих дней в периоде примерно пять седьмых. Если в кэше уже больше двух
+        # третей — за диапазоном ходить незачем, всё нужное лежит.
+        if len(have) >= (end - start).days * 0.68:
+            continue
+        try:
+            rows = _fetch_range(code, start, end)
+        except FxUnavailable as e:
+            log.warning("[fx] диапазон %s %s—%s не получен: %s", code, start, end, e)
+            continue
+        for day, rub in rows:
+            if day in have or not (start <= day <= end):
+                continue
+            db.add(FxRate(day=day, code=code, rub=rub, as_of=day))
+            have.add(day)
+            loaded += 1
+        db.commit()
+        log.info("[fx] %s: курсов за %s—%s загружено %d", code, start, end, loaded)
+    return loaded
+
+
 def rub_per(db: Session, code: str, day: date) -> float:
     """Сколько рублей за единицу валюты `code` в день `day`.
 
@@ -103,6 +178,18 @@ def rub_per(db: Session, code: str, day: date) -> float:
     cached = _load(db, day, code)
     if cached is not None:
         return cached
+
+    # Выходного в кэше нет — но рабочий день перед ним обычно уже загружен диапазоном.
+    # Сначала ищем его у себя и только потом идём в сеть: иначе выписка за пять лет
+    # снова превратилась бы в сотни запросов ради одних суббот и воскресений.
+    for back in range(1, MAX_BACKOFF_DAYS + 1):
+        near = day - timedelta(days=back)
+        rub = _load(db, near, code)
+        if rub is not None:
+            if day < date.today():
+                db.add(FxRate(day=day, code=code, rub=rub, as_of=near))
+                db.commit()
+            return rub
 
     today = date.today()
     probe = min(day, today)

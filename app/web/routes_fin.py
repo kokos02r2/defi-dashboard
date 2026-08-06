@@ -44,6 +44,7 @@ def _ready(db: Session = Depends(get_session)) -> None:
     флаг в настройках проверяется одним чтением.
     """
     fin.seed_categories(db)
+    fin.seed_rules(db)
 
 
 router = APIRouter(prefix="/fin", dependencies=[Depends(_ready)])
@@ -417,13 +418,15 @@ def import_map(request: Request, token: str, error: str = "",
         db, user=user, token=token, meta=meta, acc=acc, m=m,
         labels=imp.header_labels(rows, m), preview=preview, total=total,
         head=rows[:imp.PREVIEW_ROWS + 3], error=error,
-        bad=sum(1 for r in preview if r.error)))
+        bad=sum(1 for r in preview if r.error),
+        skipped=sum(1 for r in preview if r.skip)))
 
 
 @router.post("/import/{token}/remap")
 def import_remap(token: str, header_row: str = Form("0"), day: str = Form(""),
                  amount: str = Form(""), expense: str = Form(""), income: str = Form(""),
-                 note: str = Form(""), currency: str = Form(""),
+                 note: str = Form(""), currency: str = Form(""), fee: str = Form(""),
+                 state: str = Form(""),
                  expense_negative: str = Form(""), user: User = Depends(require_user),
                  db: Session = Depends(get_session)):
     """Сохраняет исправленное сопоставление на счёте и возвращает к предпросмотру.
@@ -440,6 +443,7 @@ def import_remap(token: str, header_row: str = Form("0"), day: str = Form(""),
         acc.import_map = imp.Mapping.from_dict({
             "header_row": header_row, "day": day, "amount": amount, "expense": expense,
             "income": income, "note": note, "currency": currency,
+            "fee": fee, "state": state,
             "expense_negative": expense_negative == "1"}).to_dict()
         db.commit()
     return RedirectResponse(f"/fin/import/{token}", status_code=303)
@@ -461,6 +465,18 @@ def import_apply(token: str, user: User = Depends(require_user),
                                 "укажите хотя бы дату и сумму", status_code=303)
 
     parsed = imp.parse_rows(rows, m, acc.currency)
+
+    # Курсы за весь период выписки — заранее и одним запросом на валюту. Иначе каждая
+    # новая дата тянет отдельный поход в ЦБ, и выписка за несколько лет загружается
+    # десятками минут, всё это время держа базу занятой.
+    days = [r.day for r in parsed if r.day is not None]
+    if days:
+        try:
+            fx.prefetch(db, {r.currency for r in parsed if r.currency} |
+                        {acc.currency, base_currency(db)}, min(days), max(days))
+        except Exception as e:  # noqa: BLE001 — ускорение не должно ронять загрузку
+            log.warning("[fin] курсы за период не загружены: %s", e)
+
     batch = FinImportBatch(account_id=acc.id, filename=str(meta.get("filename") or ""),
                            total=len(parsed), mapping=m.to_dict())
     db.add(batch)
@@ -470,6 +486,11 @@ def import_apply(token: str, user: User = Depends(require_user),
     seen: dict[str, int] = {}
     problems: list[str] = []
     for r in parsed:
+        if r.skip:
+            # Отменённая банком операция и строка с нулевой суммой — не ошибка разбора,
+            # а нормальный ход дела: их незачем показывать как «не прочиталось».
+            batch.ignored += 1
+            continue
         if r.error:
             batch.failed += 1
             if len(problems) < 3:

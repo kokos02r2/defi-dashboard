@@ -33,23 +33,35 @@ MAX_BYTES = 8 * 1024 * 1024
 # Слова в шапке, по которым угадываются колонки. Русский, английский и испанский:
 # карты в разных банках, и шапка бывает на любом из трёх.
 HINTS = {
-    "day": ("дата операции", "дата проводки", "дата", "date", "fecha operación",
-            "fecha valor", "fecha", "f. valor", "f. operación", "buchung", "datum"),
+    "day": ("дата операции", "дата начала", "дата проводки", "дата", "date",
+            "fecha operación", "fecha valor", "fecha", "f. valor", "f. operación",
+            "buchung", "datum"),
+    # Комиссия банка — отдельные деньги, а не часть суммы операции, поэтому у неё
+    # своя колонка, а не подсказка для «суммы».
+    "fee": ("комиссия", "сумма комиссии", "fee", "commission", "comisión"),
+    # Состояние операции: отменённые и отклонённые лежат в выписке рядом с обычными
+    "state": ("state", "статус", "состояние", "status", "estado"),
     "amount": ("сумма операции", "сумма в валюте счёта", "сумма", "amount", "importe",
                "importe eur", "betrag", "total"),
     "expense": ("расход", "списание", "debit", "cargo", "gasto", "salida", "debe"),
-    "income": ("приход", "поступление", "зачисление", "credit", "abono", "ingreso",
+    "income": ("приход", "поступлени", "зачислен", "credit", "abono", "ingreso",
                "haber"),
     "note": ("описание", "назначение платежа", "назначение", "детали", "контрагент",
              "получатель", "место", "description", "concepto", "concepto ampliado",
              "descripción", "detalle", "merchant", "beneficiario", "text"),
     "currency": ("валюта операции", "валюта", "currency", "divisa", "moneda"),
 }
+# Значения колонки состояния, при которых денег не двигалось. Отменённую операцию
+# банк оставляет в выписке навсегда — записать её значило бы навсегда завысить траты.
+# «В обработке» сюда не входит: такая операция обычно доходит, а при следующей
+# загрузке выписки она же распознается как повтор и второй раз не запишется.
+BAD_STATE = ("отмен", "отклон", "не проведен", "cancel", "declin", "revert",
+             "reject", "fail")
 # Колонки, которые внешне похожи на сумму, но суммой операции не являются: остаток по
 # счёту после операции угадывается как «сумма» и молча ломает весь импорт.
 NOT_AMOUNT = ("остаток", "баланс", "saldo", "balance", "saldo posterior")
 
-FIELDS = ("day", "amount", "expense", "income", "note", "currency")
+FIELDS = ("day", "amount", "expense", "income", "note", "currency", "fee", "state")
 
 
 @dataclass
@@ -62,6 +74,8 @@ class Mapping:
     income: int | None = None          # ...и приход
     note: int | None = None
     currency: int | None = None
+    fee: int | None = None             # комиссия сверх суммы операции
+    state: int | None = None           # состояние: отменённые строки не записываются
     # В большинстве выписок расход записан отрицательным числом. Но не во всех:
     # некоторые банки отдают колонку «расход» положительными значениями.
     expense_negative: bool = True
@@ -97,6 +111,9 @@ class Row:
     currency: str = ""
     note: str = ""
     error: str = ""
+    # Пропуск — это не ошибка разбора: строка прочитана, но записывать её нечего
+    # (операция отменена банком или в сумме ноль). Разные вещи и в счётчиках разные.
+    skip: str = ""
     raw: list[str] = field(default_factory=list)
 
 
@@ -296,7 +313,7 @@ def _match_field(cell) -> str | None:
         return None
     if any(bad in s for bad in NOT_AMOUNT):
         return None
-    for f in ("day", "expense", "income", "amount", "currency", "note"):
+    for f in ("day", "state", "fee", "expense", "income", "amount", "currency", "note"):
         for word in HINTS[f]:
             if s == word or s.startswith(word) or word in s:
                 return f
@@ -365,6 +382,12 @@ def _parse_one(i: int, raw: list, m: Mapping, default_currency: str) -> Row:
     r.note = str(_cell(raw, m.note) or "").strip()[:300]
     r.currency = parse_currency(_cell(raw, m.currency), default_currency)
 
+    if m.state is not None:
+        state = str(_cell(raw, m.state) or "").strip()
+        if state and any(bad in state.lower() for bad in BAD_STATE):
+            r.skip = f"операция не прошла: {state.lower()}"
+            return r
+
     r.day = parse_day(_cell(raw, m.day))
     if r.day is None:
         r.error = "не разобрана дата"
@@ -373,22 +396,32 @@ def _parse_one(i: int, raw: list, m: Mapping, default_currency: str) -> Row:
         r.error = "дата в будущем"
         return r
 
+    fee = parse_number(_cell(raw, m.fee)) if m.fee is not None else None
     if m.amount is not None:
         v = parse_number(_cell(raw, m.amount))
-        if v is None or v == 0:
+        if v is None and fee is None:
             r.error = "не разобрана сумма"
             return r
-        negative = v < 0
-        r.kind = "expense" if negative == m.expense_negative else "income"
-        r.amount = abs(v)
+        # Приводим к виду «минус — это расход», чтобы дальше знак значил одно и то же
+        # независимо от того, каким знаком банк помечает списание.
+        total = (v or 0.0) if m.expense_negative else -(v or 0.0)
     else:
         exp = parse_number(_cell(raw, m.expense)) if m.expense is not None else None
         inc = parse_number(_cell(raw, m.income)) if m.income is not None else None
-        if exp:
-            r.kind, r.amount = "expense", abs(exp)
-        elif inc:
-            r.kind, r.amount = "income", abs(inc)
-        else:
+        if exp is None and inc is None and fee is None:
             r.error = "не разобрана сумма"
             return r
+        # В паре колонок знак не несёт смысла: «расход» — это расход, чем бы он ни
+        # был записан. Некоторые банки пишут там минус, некоторые нет.
+        total = (inc or 0.0) - abs(exp or 0.0)
+
+    # Комиссия списывается сверх суммы операции, поэтому вычитается всегда — и когда
+    # своя строка целиком состоит из неё (сумма ноль), и когда банк вернул комиссию
+    # обратно (она приходит с минусом и тогда прибавляется).
+    total -= (fee or 0.0)
+    if round(total, 2) == 0:
+        r.skip = "нулевая сумма"
+        return r
+    r.kind = "expense" if total < 0 else "income"
+    r.amount = abs(round(total, 2))
     return r
