@@ -22,3 +22,48 @@
    перезагрузки страницы. Тот же кусок сервер отдаёт в ответ на действия. #}
 {% include "fin/_tx_live.html" %}
 {% endblock %}
+
+{% block scripts %}
+<script>
+// Отметки для массового удаления. Скрипт стоит вне подменяемого куска, а слушает
+// документ: htmx перерисовывает таблицу после каждого действия, и обработчики,
+// повешенные на сами галочки, после первой же подмены перестали бы работать.
+(function () {
+  const boxes = () => document.querySelectorAll('input[name="ids"][form="tx-bulk"]');
+
+  function refresh() {
+    const form = document.getElementById("tx-bulk");
+    const btn = document.querySelector("[data-bulk-submit]");
+    const label = document.querySelector("[data-bulk-count]");
+    if (!form || !btn || !label) return;          // на странице без операций их нет
+    const all = [...boxes()];
+    const n = all.filter((b) => b.checked).length;
+    btn.disabled = n === 0;
+    label.textContent = n
+      ? "отмечено " + n + " из " + all.length + " на этой странице"
+      : "Отметьте строки галочками — удалятся все разом";
+    // Число в вопросе важнее слова «выбранные»: удаление необратимо, и человек
+    // должен увидеть, сколько именно строк исчезнет.
+    form.setAttribute("hx-confirm",
+      "Удалить отмеченные операции (" + n + ")? Вернуть их можно только повторной " +
+      "загрузкой той же выписки.");
+    const head = document.querySelector("[data-bulk-all]");
+    if (head) {
+      head.checked = n > 0 && n === all.length;
+      head.indeterminate = n > 0 && n < all.length;
+    }
+  }
+
+  document.addEventListener("change", function (e) {
+    if (e.target.matches("[data-bulk-all]")) {
+      boxes().forEach((b) => { b.checked = e.target.checked; });
+    } else if (!e.target.matches('input[name="ids"]')) {
+      return;
+    }
+    refresh();
+  });
+  document.body.addEventListener("htmx:afterSwap", refresh);
+  refresh();
+})();
+</script>
+{% endblock %}

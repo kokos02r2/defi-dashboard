@@ -578,3 +578,19 @@ table.positions tr.dimmed .name { font-weight: 500; }
 table.positions tr.hlrow > td {
   background: var(--surface-sunken); font-weight: 560; color: var(--ink);
 }
+
+/* Массовое удаление операций: колонка с галочками и полоса с кнопкой над таблицей.
+   Колонка узкая и по центру — она не данные, а инструмент, и не должна отбирать
+   место у описания. */
+table.positions th.pick, table.positions td.pick {
+  width: 34px; text-align: center; padding-left: 10px; padding-right: 0;
+}
+table.positions .pick input { width: 16px; height: 16px; accent-color: var(--series-1); }
+.bulkbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 0;
+}
+.bulkbar form { display: inline; }
+/* Кнопка без отметок неактивна, но остаётся на месте: если её прятать, полоса
+   прыгает при первой же галочке. */
+.bulkbar button[disabled] { opacity: .45; cursor: default; }

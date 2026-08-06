@@ -27,6 +27,7 @@ from app.auth import require_user
 from app.core import finance as fin
 from app.core import finimport as imp
 from app.core import fx
+from app.core.fmt import plural
 from app.db.base import get_session
 from app.db.models import (KV, FinAccount, FinCategory, FinImportBatch, FinRule, FinTx,
                            User, utcnow)
@@ -295,6 +296,30 @@ def tx_delete(request: Request, tid: int, back: str = Form("/fin/tx"),
         db.delete(tx)
         db.commit()
     return _after(request, db, user, back, saved="1")
+
+
+@router.post("/tx/delete")
+def tx_delete_many(request: Request, ids: list[int] = Form(default=[]),
+                   back: str = Form("/fin/tx"), user: User = Depends(require_user),
+                   db: Session = Depends(get_session)):
+    """Удалить отмеченные операции разом.
+
+    Разбирая залитую выписку, лишнее видишь пачкой: десяток строк одного и того же
+    вида. Удаление по одной превращает это в десяток подтверждений, и человек
+    бросает на середине.
+
+    Удаляются ровно отмеченные — не «всё по фильтру»: пропажа того, чего не видел
+    на экране, страшнее любого удобства. Целую загрузку отменяют в её разделе.
+    """
+    if not ids:
+        return _after(request, db, user, back, error="не отмечено ни одной операции")
+    n = 0
+    for tx in db.scalars(select(FinTx).where(FinTx.id.in_(ids))):
+        db.delete(tx)
+        n += 1
+    db.commit()
+    return _after(request, db, user, back, saved="1",
+                  hint=f"удалено {n} {plural(n, 'операция', 'операции', 'операций')}")
 
 
 @router.post("/tx/{tid}/exclude")

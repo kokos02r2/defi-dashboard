@@ -193,10 +193,27 @@
     </div>
   </div>
   {% endif %}
+  {# Форма массового удаления стоит рядом с таблицей, а галочки — в строках и
+     ссылаются на неё атрибутом form. Вкладывать форму в форму нельзя: в строках
+     уже есть свои кнопки, и разметка сломалась бы. #}
+  <div class="body bulkbar">
+    <form id="tx-bulk" method="post" action="/fin/tx/delete"
+          hx-post="/fin/tx/delete" hx-target="#tx-live" hx-swap="outerHTML">
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="btn ghost danger" type="submit" data-bulk-submit>Удалить отмеченные</button>
+    </form>
+    <span class="meta" data-bulk-count>Отметьте строки галочками — удалятся все разом</span>
+    <span class="spacer" style="flex:1"></span>
+    <span class="meta">Целую загрузку отменяют
+      <a href="/fin/import">в разделе загрузки</a> — там она снимается одной кнопкой</span>
+  </div>
   <div class="table-scroll">
     <table class="positions">
       <thead>
         <tr>
+          <th class="pick">
+            <input type="checkbox" data-bulk-all aria-label="Отметить все на странице">
+          </th>
           <th>Когда</th><th>Описание</th>
           {% if f.uncat != '1' %}<th>Категория</th>{% endif %}
           <th>Счёт</th><th class="num">Сумма</th>
@@ -206,6 +223,10 @@
       <tbody>
         {% for t in rows %}
         <tr class="{{ 'dimmed' if t.excluded }}{{ ' editing' if editing and editing.id == t.id }}">
+          <td class="pick">
+            <input type="checkbox" name="ids" value="{{ t.id }}" form="tx-bulk"
+                   aria-label="Отметить операцию {{ t.day | dmy }}">
+          </td>
           <td class="meta">{{ t.day | dmy }}</td>
           <td>
             <div class="name">{{ t.note or '—' }}</div>
