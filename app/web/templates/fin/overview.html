@@ -1,0 +1,408 @@
+{% extends "base.html" %}
+{% block title %}Обзор — Личные финансы{% endblock %}
+{% set active = 'fin_over' %}
+
+{% block content %}
+<h1 class="page">Личные финансы</h1>
+<div class="page-sub">
+  Доходы и расходы вне блокчейна. С портфелем DeFi этот раздел не пересекается ничем:
+  ни одна цифра отсюда не входит в чистую стоимость позиций и наоборот. Итоги сведены
+  в {{ base }} по курсу ЦБ <b>на дату каждой операции</b> — иначе расходы за прошлый год
+  менялись бы каждый день вместе с курсом.
+</div>
+
+<div class="filters">
+  <form method="get" action="/fin">
+    <select name="m" onchange="this.form.submit()" aria-label="Месяц">
+      {% for key in months_have %}
+        <option value="{{ key }}" {{ 'selected' if key == month }}>{{ key | month_ru }}</option>
+      {% endfor %}
+      {% if month not in months_have %}
+        <option value="{{ month }}" selected>{{ month | month_ru }}</option>
+      {% endif %}
+    </select>
+  </form>
+  <span class="spacer" style="flex:1"></span>
+  <a class="btn ghost" href="/fin/tx?m={{ month }}">Все операции месяца</a>
+  {% if s.uncategorized %}
+  <a class="btn" href="/fin/tx?uncat=1">Разобрать без категории · {{ s.uncategorized }}</a>
+  {% endif %}
+</div>
+
+{% if not s.count %}
+<div class="card">
+  <div class="empty">
+    За {{ month | month_ru }} операций нет.<br>
+    {% if not months_have %}
+      Начните с <a href="/fin/accounts">счёта</a> — карты или наличных, — а потом
+      <a href="/fin/import">загрузите выписку</a> или добавьте операции руками.
+    {% else %}
+      Выберите другой месяц или <a href="/fin/import">загрузите выписку</a>.
+    {% endif %}
+  </div>
+</div>
+{% else %}
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Заработано</div>
+    <div class="value">{{ s.income | money(base) }}</div>
+    <div class="sub">
+      {% if prev.income %}
+        {% set d = s.income - prev.income %}
+        <span class="{{ 'up' if d > 0 else ('down' if d < 0 else '') }}">
+          {{ '▲' if d > 0 else ('▼' if d < 0 else '·') }} {{ d | abs | money(base) }}
+        </span> к {{ prev.income | money(base) }} месяцем раньше
+      {% else %}прошлый месяц без доходов{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Потрачено</div>
+    <div class="value">{{ s.expense | money(base) }}</div>
+    <div class="sub">
+      {% if prev.expense %}
+        {# Рост расходов — это плохо, поэтому цвет обратный к доходам: там вверх зелёное #}
+        {% set d = s.expense - prev.expense %}
+        <span class="{{ 'down' if d > 0 else ('up' if d < 0 else '') }}">
+          {{ '▲' if d > 0 else ('▼' if d < 0 else '·') }} {{ d | abs | money(base) }}
+        </span> к {{ prev.expense | money(base) }} месяцем раньше
+      {% else %}прошлый месяц без расходов{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Осталось</div>
+    <div class="value {{ 'up' if s.net > 0 else ('down' if s.net < 0 else '') }}">
+      {{ '−' if s.net < 0 else '' }}{{ s.net | abs | money(base) }}
+    </div>
+    <div class="sub">
+      {% if s.savings_rate is not none %}
+        {{ s.savings_rate | pct(0) }} от дохода
+        {%- if s.savings_rate < 0 %} — тратится больше, чем приходит{% endif %}
+      {% else %}доходов за месяц не записано{% endif %}
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="label">Операций за месяц</div>
+    <div class="value sm">{{ s.count }}</div>
+    <div class="sub">
+      {% if s.uncategorized %}
+        <a href="/fin/tx?uncat=1">{{ s.uncategorized }} без категории</a>
+      {% else %}все разобраны по категориям{% endif %}
+      {%- if s.excluded %} · {{ s.excluded }} не учтено{% endif %}
+    </div>
+  </div>
+</div>
+
+{% if s.no_rate %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    <b>{{ s.no_rate }}</b> {{ s.no_rate | plural('операция', 'операции', 'операций') }}
+    не {{ s.no_rate | plural('учтена', 'учтены', 'учтены') }} в суммах: для
+    {{ s.no_rate | plural('неё', 'них', 'них') }} не удалось получить курс ЦБ на дату.
+    Значит настоящие цифры выше показанных.
+    <form method="post" action="/fin/settings/recompute" style="display:inline">
+      <button class="btn ghost" type="submit">Досчитать сейчас</button>
+    </form>
+  </span>
+</div>
+{% endif %}
+{% endif %}
+
+{% if series | length > 1 %}
+<div class="card chart-card">
+  <div class="chart-head">
+    <h2>Доходы и расходы по месяцам</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      {{ series | length }} мес.
+    </span>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--good)"></i>Доходы</span>
+    <span><i style="background:var(--critical)"></i>Расходы</span>
+    <span><i style="background:var(--series-2)"></i>Осталось</span>
+  </div>
+  <div class="chart-box"><canvas id="fin-months"></canvas></div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Месяцы без операций показаны нулём, а не пропущены: иначе перерыв в учёте
+      выглядел бы как месяц без расходов. Последний столбик — незакрытый месяц,
+      он ещё вырастет.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if expense_rows %}
+<div class="card" style="margin-top:16px">
+  <div class="chart-head">
+    <h2>На что ушли деньги</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      {{ month | month_ru }} · {{ s.expense | money(base) }}
+    </span>
+  </div>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Категория</th><th class="num">Потрачено</th><th>Доля</th>
+          <th class="num">Прошлый месяц</th><th class="num">Изменение</th>
+          <th class="num">Операций</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in expense_rows %}
+        <tr>
+          <td>
+            {% if b.key %}
+              <a href="/fin/tx?m={{ month }}&amp;category={{ b.key }}">{{ b.name }}</a>
+            {% else %}
+              <a href="/fin/tx?uncat=1">{{ b.name }}</a>
+            {% endif %}
+          </td>
+          <td class="num">{{ b.amount | money(base) }}</td>
+          <td>
+            {# Полоска прямо в таблице вместо круговой диаграммы: она всегда совпадает
+               с числом рядом и читается на телефоне, а цвета сектора с подписью
+               приходилось бы держать в согласии руками. #}
+            <div class="cbar" title="{{ b.share(s.expense) | pct(1) }} от расходов месяца">
+              <i style="width:{{ b.share(s.expense) | round(1) }}%"></i>
+              <span>{{ b.share(s.expense) | pct(0) }}</span>
+            </div>
+          </td>
+          <td class="num meta">{{ b.prev | money(base) if b.prev else '—' }}</td>
+          <td class="num">
+            {% if b.prev %}
+              <span class="{{ 'down' if b.delta > 0 else 'up' }}">
+                {{ '▲' if b.delta > 0 else '▼' }} {{ b.delta | abs | money(base) }}
+              </span>
+            {% else %}<span class="meta">впервые</span>{% endif %}
+          </td>
+          <td class="num meta">{{ b.count }}</td>
+          <td style="text-align:right">
+            {% if b.key %}
+            <button class="btn ghost" type="button" data-trend="{{ b.key }}"
+                    title="Показать эту категорию по месяцам">тренд</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card chart-card" id="trend-card" style="margin-top:16px;display:none">
+  <div class="chart-head">
+    <h2>Категория по месяцам: <span id="trend-name"></span></h2>
+    <span class="spacer"></span>
+    <button class="btn ghost" type="button" onclick="closeTrend()">Скрыть</button>
+  </div>
+  <div class="chart-box" style="height:220px"><canvas id="fin-trend"></canvas></div>
+</div>
+{% endif %}
+
+{% if income_rows %}
+<div class="card" style="margin-top:16px">
+  <h2>Откуда пришли деньги</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th>Категория</th><th class="num">Получено</th><th>Доля</th>
+            <th class="num">Прошлый месяц</th><th class="num">Операций</th></tr>
+      </thead>
+      <tbody>
+        {% for b in income_rows %}
+        <tr>
+          <td>{% if b.key %}<a href="/fin/tx?m={{ month }}&amp;category={{ b.key }}">{{ b.name }}</a>
+              {% else %}{{ b.name }}{% endif %}</td>
+          <td class="num">{{ b.amount | money(base) }}</td>
+          <td><div class="cbar"><i style="width:{{ b.share(s.income) | round(1) }}%"></i>
+              <span>{{ b.share(s.income) | pct(0) }}</span></div></td>
+          <td class="num meta">{{ b.prev | money(base) if b.prev else '—' }}</td>
+          <td class="num meta">{{ b.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if top %}
+<div class="card" style="margin-top:16px">
+  <h2>Крупнейшие траты месяца</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th>Когда</th><th>Описание</th><th>Категория</th><th>Счёт</th>
+            <th class="num">Сумма</th></tr>
+      </thead>
+      <tbody>
+        {% for t in top %}
+        <tr>
+          <td class="meta">{{ t.day | dmy }}</td>
+          <td>{{ t.note or '—' }}</td>
+          <td class="meta">{{ t.category.name if t.category else 'без категории' }}</td>
+          <td class="meta">{{ t.account.name if t.account else '—' }}</td>
+          <td class="num">
+            {{ t.amount_base | money(base) }}
+            {% if t.currency != base %}
+            <div class="meta">{{ t.amount | money(t.currency) }}</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Обычно ответ на вопрос «куда ушли деньги» находится в этих десяти строках, а не
+      в сумме мелких покупок.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if recurring %}
+<div class="card" style="margin-top:16px">
+  <details>
+    <summary class="card-summary">
+      Похоже на регулярные платежи · {{ recurring | length }}
+    </summary>
+    <div class="body">
+      <div class="note" style="margin-top:0">
+        Один и тот же платёж в разные месяцы за последние полгода. Здесь обычно и
+        находятся подписки, о которых забыли. Признак — не одинаковая сумма, а
+        регулярность: у связи и коммунальных сумма гуляет, а платёж всё равно каждый месяц.
+      </div>
+      <div class="table-scroll">
+        <table class="positions">
+          <thead>
+            <tr><th>Платёж</th><th class="num">Месяцев</th><th class="num">В среднем</th>
+                <th class="num">Всего за полгода</th><th>Последний раз</th></tr>
+          </thead>
+          <tbody>
+            {% for r in recurring %}
+            <tr>
+              <td>
+                <div class="name">{{ r.examples[0] if r.examples else r.name }}</div>
+                {% if r.examples | length > 1 %}
+                <div class="meta">{{ r.examples[1] }}</div>
+                {% endif %}
+              </td>
+              <td class="num">{{ r.months }}</td>
+              <td class="num">{{ r.avg | money(base) }}</td>
+              <td class="num">{{ r.total | money(base) }}</td>
+              <td class="meta">{{ r.last_day | dmy }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+</div>
+{% endif %}
+
+{% if by_account | length > 1 %}
+<div class="card" style="margin-top:16px">
+  <h2>По счетам за месяц</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead><tr><th>Счёт</th><th class="num">Потрачено</th><th>Доля</th>
+                 <th class="num">Операций</th></tr></thead>
+      <tbody>
+        {% for b in by_account %}
+        <tr>
+          <td><a href="/fin/tx?m={{ month }}&amp;account={{ b.key }}">{{ b.name }}</a></td>
+          <td class="num">{{ b.amount | money(base) }}</td>
+          <td><div class="cbar"><i style="width:{{ b.share(s.expense) | round(1) }}%"></i>
+              <span>{{ b.share(s.expense) | pct(0) }}</span></div></td>
+          <td class="num meta">{{ b.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.min.js"></script>
+<script src="/static/chartkit.js"></script>
+<script>
+const SERIES = {{ series | tojson }};
+const BASE = {{ base | tojson }};
+let monthsChart = null, trendChart = null;
+
+function fmt(v) { return ChartKit.money(v, BASE); }
+
+function drawMonths() {
+  const el = document.getElementById("fin-months");
+  if (!el || SERIES.length < 2) return;
+  const all = SERIES.flatMap(r => [r.income, r.expense, r.net]);
+  const opts = ChartKit.options(all, c => " " + c.dataset.label + ": " + fmt(c.parsed.y));
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(all, BASE);
+
+  if (monthsChart) monthsChart.destroy();
+  monthsChart = new Chart(el, {
+    data: {
+      labels: SERIES.map(r => r.month),
+      datasets: [
+        {type: "bar", label: "Доходы", data: SERIES.map(r => r.income),
+         backgroundColor: ChartKit.css("--good"), borderRadius: 3, maxBarThickness: 34},
+        // Расходы вниз: так сразу видно, перекрывает ли доход траты, без чтения чисел
+        {type: "bar", label: "Расходы", data: SERIES.map(r => -r.expense),
+         backgroundColor: ChartKit.css("--critical"), borderRadius: 3, maxBarThickness: 34},
+        {type: "line", label: "Осталось", data: SERIES.map(r => r.net),
+         borderColor: ChartKit.css("--series-2"), borderWidth: 2, tension: .25,
+         pointRadius: 0, pointHoverRadius: 4, fill: false},
+      ],
+    },
+    options: opts,
+  });
+}
+
+// Тренд одной категории подгружается по требованию: строить двадцать графиков сразу
+// незачем, а вопрос «эта категория растёт?» возникает про одну-две.
+async function showTrend(id) {
+  const r = await fetch("/fin/api/category-trend?category=" + id + "&months=18");
+  if (!r.ok) return;
+  const data = await r.json();
+  document.getElementById("trend-name").textContent = data.name || "";
+  document.getElementById("trend-card").style.display = "";
+  const vals = data.months.map(m => m.value);
+  const opts = ChartKit.options(vals, c => " " + fmt(c.parsed.y));
+  opts.scales.y.ticks.callback = ChartKit.tickFormatter(vals, BASE);
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(document.getElementById("fin-trend"), {
+    type: "bar",
+    data: {labels: data.months.map(m => m.month),
+           datasets: [{label: data.name, data: vals,
+                       backgroundColor: ChartKit.css("--series-1"),
+                       borderRadius: 3, maxBarThickness: 40}]},
+    options: opts,
+  });
+  document.getElementById("trend-card").scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+function closeTrend() {
+  document.getElementById("trend-card").style.display = "none";
+}
+
+document.querySelectorAll("button[data-trend]").forEach(b => {
+  b.addEventListener("click", () => showTrend(b.dataset.trend));
+});
+
+drawMonths();
+document.addEventListener("themechange", () => { drawMonths(); });
+</script>
+{% endblock %}

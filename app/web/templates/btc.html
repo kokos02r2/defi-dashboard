@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}BTC — DeFi Dashboard{% endblock %}
-{% set active = 'btc' %}
+{% set active = 'journal' %}
+{% set tab = 'btc' %}
 
 {% block content %}
+{% include "partials/journal_tabs.html" %}
 <h1 class="page">Покупки BTC</h1>
 <div class="page-sub">
   Журнал покупок биткоина с заклеймленных комиссий. Считается только здесь: в чистую
@@ -29,14 +31,14 @@
     <div class="label">Средняя цена</div>
     <div class="value">${{ s.avg_price | usd_price }}</div>
     <div class="sub">
-      вложено {{ s.total_cost | usd_short }}
+      вложено {{ s.total_cost | usd }}
       {% if s.best_price %}· лучшая ${{ s.best_price | usd_price }}{% endif %}
     </div>
   </div>
 
   <div class="tile">
     <div class="label">Стоимость сейчас</div>
-    <div class="value">{{ s.value_now | usd_short if s.value_now is not none else 'н/д' }}</div>
+    <div class="value">{{ s.value_now | usd if s.value_now is not none else 'н/д' }}</div>
     <div class="sub">
       {% if s.price_now %}курс ${{ s.price_now | usd_price }}{% else %}курс BTC недоступен{% endif %}
     </div>
@@ -46,7 +48,7 @@
     <div class="label">Разница</div>
     {% if s.pnl is not none %}
     <div class="value sm {{ 'up' if s.pnl > 0 else ('down' if s.pnl < 0 else '') }}">
-      {{ '▲' if s.pnl > 0 else ('▼' if s.pnl < 0 else '·') }} {{ s.pnl | abs | usd_short }}
+      {{ '▲' if s.pnl > 0 else ('▼' if s.pnl < 0 else '·') }} {{ s.pnl | abs | usd }}
     </div>
     <div class="sub">{{ s.pnl_pct | pct(1, true) if s.pnl_pct is not none else '' }} к вложенному</div>
     {% else %}

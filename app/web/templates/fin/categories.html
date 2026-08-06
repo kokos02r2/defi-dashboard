@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Категории — Личные финансы{% endblock %}
+{% set active = 'fin_cat' %}
+
+{% block content %}
+<h1 class="page">Категории и правила</h1>
+<div class="page-sub">
+  Категории отвечают на вопрос «на что ушли деньги». Правила расставляют их сами:
+  один раз сказали «в описании есть Mercadona — значит Продукты», и все будущие
+  выписки разбираются без участия человека.
+</div>
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">✓</span>
+  <span>Сохранено{% if applied and applied | int > 0 %} · правила разобрали
+    {{ applied }} {{ applied | int | plural('операцию', 'операции', 'операций') }}{% endif %}</span>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if uncategorized %}
+<div class="alert warning" style="margin-bottom:16px">
+  <span class="ic">▲</span>
+  <span>
+    Без категории: <b>{{ uncategorized }}</b>
+    {{ uncategorized | plural('операция', 'операции', 'операций') }} —
+    <a href="/fin/tx?uncat=1">разобрать</a>. Они попадают в итоги месяца, но в разбивке
+    по категориям стоят отдельной строкой.
+  </span>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px" id="rules">
+  <h2>Правила</h2>
+  <div class="body">
+    <form method="post" action="/fin/rules/add"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label style="flex:1;min-width:220px">
+        <span class="fl">Если в описании есть</span>
+        <input type="text" name="pattern" style="width:100%" required
+               placeholder="mercadona">
+      </label>
+      <label>
+        <span class="fl">Тогда категория</span>
+        <select name="category" style="min-width:190px">
+          <option value="">— не задана —</option>
+          {% for c in cats %}
+            {% if not c.archived %}
+            <option value="{{ c.id }}">{{ c.name }}{{ ' (доход)' if c.kind == 'income' }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label class="check-inline">
+        <input type="checkbox" name="skip" value="1">
+        <span>Не учитывать такие операции</span>
+      </label>
+      <button class="btn primary" type="submit">＋ Создать правило</button>
+    </form>
+    <div class="note">
+      Образец сравнивается без учёта регистра и как часть строки: «mercadona» подойдёт
+      к «MERCADONA 4021 BARCELONA». Если подходит несколько правил, побеждает то, у
+      которого образец длиннее — оно описывает случай точнее.
+    </div>
+    <div class="note">
+      Галочка «не учитывать» — для переводов между своими счетами. Такие строки есть в
+      каждой выписке, и без этого они удваивали бы расходы: сначала как «перевод»,
+      потом как настоящая покупка с другой карты.
+    </div>
+    <div class="note">
+      Новое правило сразу применяется к операциям <b>без категории</b>. Уже
+      расставленное вручную оно не переписывает: ручное решение всегда важнее правила.
+    </div>
+  </div>
+
+  {% if rules %}
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th>Если в описании есть</th><th>Тогда</th><th class="num">Срабатываний</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for r in rules %}
+        <tr>
+          <td><code>{{ r.pattern }}</code></td>
+          <td>
+            {% if r.skip %}<span class="status off">не учитывать</span>
+            {% elif r.category %}{{ r.category.name }}
+            {% else %}<span class="status warn">категория удалена</span>{% endif %}
+          </td>
+          <td class="num meta">{{ r.hits or 0 }}</td>
+          <td style="text-align:right">
+            <form method="post" action="/fin/rules/{{ r.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить правило «{{ r.pattern }}»? Уже расставленные им категории останутся.')">
+              <button class="btn ghost danger" type="submit" title="Удалить">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <form method="post" action="/fin/rules/apply" style="display:inline">
+      <input type="hidden" name="back" value="/fin/categories">
+      <button class="btn" type="submit">Применить правила к неразобранным</button>
+    </form>
+    <span class="meta" style="margin-left:8px">
+      Пригодится после создания нескольких правил сразу.
+    </span>
+  </div>
+  {% else %}
+  <div class="body" style="padding-top:0">
+    <div class="note" style="margin-top:0">
+      Правил пока нет. Удобнее всего создавать их по ходу разбора выписки: на странице
+      <a href="/fin/tx?uncat=1">операций без категории</a> рядом с каждой строкой есть
+      поле образца — категория и правило задаются одним движением.
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>{{ 'Переименовать категорию' if editing else 'Категории' }}</h2>
+  <div class="body">
+    <form method="post"
+          action="{{ ('/fin/categories/%d/edit' % editing.id) if editing else '/fin/categories/add' }}"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label style="flex:1;min-width:220px">
+        <span class="fl">Название</span>
+        <input type="text" name="name" style="width:100%" required
+               value="{{ editing.name if editing else '' }}" placeholder="Продукты">
+      </label>
+      {% if not editing %}
+      <label>
+        <span class="fl">Вид</span>
+        <select name="kind" style="min-width:150px">
+          <option value="expense">Расход</option>
+          <option value="income">Доход</option>
+        </select>
+      </label>
+      {% endif %}
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Добавить' }}</button>
+      {% if editing %}<a class="btn ghost" href="/fin/categories">Отмена</a>{% endif %}
+    </form>
+  </div>
+
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th>Категория</th><th>Вид</th><th class="num">Операций</th><th>Состояние</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for c in cats %}
+        <tr class="{{ 'dimmed' if c.archived }}{{ ' editing' if editing and editing.id == c.id }}">
+          <td>{{ c.name }}</td>
+          <td class="meta">{{ 'доход' if c.kind == 'income' else 'расход' }}</td>
+          <td class="num meta">{{ used.get(c.id, 0) }}</td>
+          <td>
+            {% if c.archived %}<span class="status off">в архиве</span>
+            {% else %}<span class="status ok">● используется</span>{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn ghost" href="/fin/categories?edit={{ c.id }}" title="Переименовать">✎</a>
+            <form method="post" action="/fin/categories/{{ c.id }}/archive" style="display:inline">
+              <button class="btn ghost" type="submit"
+                      title="{{ 'Вернуть из архива' if c.archived else 'Убрать из выбора, ничего не потеряв' }}">
+                {{ '↩' if c.archived else '⌦' }}
+              </button>
+            </form>
+            <form method="post" action="/fin/categories/{{ c.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить категорию «{{ c.name }}»?{% if used.get(c.id, 0) %} {{ used.get(c.id) }} операций останутся, но станут без категории.{% endif %}')">
+              <button class="btn ghost danger" type="submit" title="Удалить">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Архив лучше удаления: категория исчезает из выбора, но прошлые операции остаются
+      разложенными, и статистика за прошлые месяцы не рассыпается. Удаление же не теряет
+      операции — они просто становятся «без категории».
+    </div>
+  </div>
+</div>
+{% endblock %}

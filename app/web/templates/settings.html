@@ -13,38 +13,6 @@
 <div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
 {% endif %}
 
-<div class="card">
-  <h2>Исходное вложение</h2>
-  <div class="body">
-    <form method="post" action="/settings" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-      <label style="display:block">
-        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">
-          Сколько своих денег заведено в DeFi, $
-        </span>
-        <input type="text" name="initial_deposit" style="min-width:220px"
-               placeholder="например 60000"
-               value="{{ '%.2f' % prefs.initial_deposit_usd if prefs.initial_deposit_usd else '' }}">
-      </label>
-      <label style="display:block;flex:1;min-width:220px">
-        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">
-          Пометка (необязательно)
-        </span>
-        <input type="text" name="initial_note" style="width:100%"
-               placeholder="например: заведено в январе 2026"
-               value="{{ prefs.initial_note or '' }}">
-      </label>
-      <button class="btn primary" type="submit">Сохранить</button>
-    </form>
-
-    <div class="note">
-      Это сумма, которую вы <b>реально завели снаружи</b> — с биржи или из другого
-      кошелька. Не сумма всех пополнений позиций: закрывая позицию и открывая новую,
-      вы прокручиваете одни и те же деньги, и складывать такие пополнения нельзя.
-      Оставьте поле пустым, чтобы убрать сравнение с дашборда.
-    </div>
-  </div>
-</div>
-
 <div class="card" style="margin-top:16px" id="chains">
   <h2>Сети</h2>
   <div class="body">
@@ -81,122 +49,80 @@
   </div>
 </div>
 
-<div class="card" style="margin-top:16px" id="temp">
-  <h2>{{ 'Изменить сумму' if editing_temp else 'Временно заведённые суммы' }}</h2>
+{# Состояние переехало сюда со страницы Кошельки: к кошелькам оно не относилось,
+   а искали его именно в настройках. #}
+<div class="card" style="margin-top:16px">
+  <h2>Уведомления</h2>
   <div class="body">
-    {# Одна форма на два режима, как на странице партий: edit=ID в адресе решает,
-       куда она отправится. Дата не правится — это когда запись создана. #}
-    <form method="post"
-          action="{{ ('/settings/temp/%d/edit' % editing_temp.id) if editing_temp else '/settings/temp/add' }}"
-          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-      <label>
-        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Сумма, $</span>
-        <input type="text" name="amount" placeholder="5000" style="min-width:150px" required
-               value="{{ temp_prefill.amount }}">
-      </label>
-      <label style="flex:1;min-width:240px">
-        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Описание</span>
-        <input type="text" name="note" style="width:100%" value="{{ temp_prefill.note }}"
-               placeholder="долив залога в Fluid ради health factor">
-      </label>
-      {% if editing_temp %}
-        <button class="btn primary" type="submit">Сохранить</button>
-        <a class="btn ghost" href="/settings#temp">Отмена</a>
-      {% else %}
-        <button class="btn primary" type="submit" title="Добавить сумму">＋ Добавить</button>
-      {% endif %}
-    </form>
-
-    {% if temps %}
-    <div class="table-scroll" style="margin-top:16px">
-      <table class="positions">
-        <thead>
-          <tr><th>Когда</th><th>Описание</th><th class="num">Сумма</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for t in temps %}
-          <tr {{ 'class=editing' if editing_temp and editing_temp.id == t.id }}>
-            <td class="meta">{{ t.created_at | ts_short }}</td>
-            <td>{{ t.note or '—' }}</td>
-            <td class="num">{{ t.amount_usd | usd }}</td>
-            <td style="text-align:right;white-space:nowrap">
-              <a class="btn ghost" href="/settings?edit={{ t.id }}#temp" title="Изменить">✎</a>
-              <form method="post" action="/settings/temp/{{ t.id }}/delete" style="display:inline"
-                    onsubmit="return confirm('Убрать эту сумму? Это значит, что деньги вернулись — сравнение с входом пересчитается.')">
-                <button class="btn ghost danger" type="submit" title="Деньги вернулись">✕</button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-          <tr>
-            <td colspan="2"><b>Итого вычитается</b></td>
-            <td class="num"><b>{{ temp_total | usd }}</b></td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    {% if notify.configured %}
+      <dl class="kv">
+        <dt>Telegram</dt><dd><span class="status ok">✓ настроен</span></dd>
+        {# Действующие значения из базы, а не из .env: иначе тут висело бы старое
+           число, пока в Оповещениях стоит новое — они уже разошлись однажды. #}
+        <dt>Порог health factor</dt>
+        <dd>{{ conf.health_factor }} · <a href="/alerts#thresholds">изменить</a></dd>
+        <dt>Пауза против дребезга</dt>
+        <dd>{{ (conf.cooldown / 60) | round | int }} мин</dd>
+        <dt>Выход из диапазона</dt>
+        <dd>{% if conf.out_of_range %}<span class="status ok">✓ сообщается</span>
+            {% else %}<span class="status off">— выключено</span>{% endif %}</dd>
+        <dt>Отправлено алертов</dt><dd>{{ notify.sent }}{% if notify.failed %} · <span class="status bad">✕ не доставлено {{ notify.failed }}</span>{% endif %}</dd>
+        {% if notify.last %}<dt>Последнее</dt><dd>{{ notify.last.notified_at | ts_short }}</dd>{% endif %}
+      </dl>
+    {% else %}
+      <div class="note" style="margin-top:0">
+        <span class="status warn">▲ Telegram не настроен</span> — алерты копятся только
+        в дашборде.
+        {% if not notify.enabled %}Уведомления выключены через <code>NOTIFY_ENABLED</code>.
+        {% elif not notify.has_token %}Не задан <code>TELEGRAM_BOT_TOKEN</code>.
+        {% elif not notify.has_chat %}Не задан <code>TELEGRAM_CHAT_ID</code> —
+        выполните <code>manage.py notify-chatid</code>.{% endif %}
+      </div>
     {% endif %}
-
     <div class="note">
-      Сюда заносятся деньги, которые вы завели в позиции <b>временно</b> — например, долили
-      залога во Fluid, чтобы поднять health factor. Такая сумма физически лежит внутри
-      позиции и попадает в её стоимость, но прибылью не является: это те же ваши деньги,
-      положенные в долг самому себе. При сравнении с исходным вложением она вычитается,
-      иначе дашборд показал бы ровно на неё несуществующий рост.
-    </div>
-    <div class="note">
-      Забрали деньги обратно — нажмите ✕, и сравнение вернётся к прежней базе.
-      Ошиблись в сумме или описании — ✎ правит запись, дата создания при этом
-      сохраняется: по ней видно, что и когда доливалось.
+      Уведомления приходят, только пока приложение работает. Спящий или выключенный
+      компьютер означает, что просадку никто не заметит — для круглосуточного контроля
+      риска дашборд нужно выносить на сервер.
     </div>
   </div>
 </div>
 
-{% if prefs.initial_deposit_usd %}
 <div class="card" style="margin-top:16px">
-  <h2>Что сравнивается</h2>
+  <h2>Обновление</h2>
   <div class="body">
     <dl class="kv">
-      <dt>Исходное вложение</dt><dd>{{ prefs.initial_deposit_usd | usd }}</dd>
-      <dt>Чистая стоимость сейчас</dt><dd>{{ totals.net | usd }}</dd>
-      {% if totals.vs.temp %}
-      <dt>− временно заведено</dt><dd>−{{ totals.vs.temp | usd }}</dd>
-      <dt><b>= с чем сравниваем</b></dt><dd><b>{{ totals.vs.current | usd }}</b></dd>
+      <dt>Состояние активных позиций</dt><dd>каждые {{ config.LIVE_INTERVAL }} с</dd>
+      <dt>Поиск новых позиций и событий</dt><dd>каждые {{ (config.SYNC_INTERVAL / 3600) | round(1) }} ч</dd>
+      <dt>Точка на графике капитала</dt><dd>не чаще, чем раз в {{ (config.SNAPSHOT_INTERVAL / 60) | round(0) }} мин</dd>
+      <dt>Сети</dt><dd>{{ config.ENABLED_CHAINS | join(', ') }}</dd>
+      {% if status.last_sync %}
+      <dt>Последняя синхронизация</dt>
+      <dd><time class="localdt" datetime="{{ status.last_sync.started_at }}"
+            >{{ status.last_sync.started_at[:16] | replace('T', ' ') }} UTC</time> ·
+          {{ status.last_sync.positions }} позиций за {{ status.last_sync.get('elapsed', '?') }} с</dd>
       {% endif %}
-      <dt><b>Изменение</b></dt>
-      <dd><b class="{{ 'status ok' if totals.vs.delta > 0 else ('status bad' if totals.vs.delta < 0 else '') }}">
-        {{ '▲' if totals.vs.delta > 0 else ('▼' if totals.vs.delta < 0 else '·') }}
-        {{ totals.vs.delta | usd }} ({{ totals.vs.pct | pct(2, true) }})
-      </b></dd>
+      {% if status.last_live %}
+      <dt>Последнее live-обновление</dt>
+      <dd><time class="localdt" datetime="{{ status.last_live.started_at }}"
+            >{{ status.last_live.started_at[:16] | replace('T', ' ') }} UTC</time></dd>
+      {% endif %}
     </dl>
+    {% if status.last_sync and status.last_sync.errors %}
     <div class="note">
-      Заклеймленные комиссии ({{ totals.fees_claimed | usd }}) отдельно
-      <b>не прибавляются</b> — вы реинвестируете их обратно в позиции, поэтому они уже
-      сидят внутри чистой стоимости. Прибавив их сверху, дашборд посчитал бы их дважды.
-    </div>
-    <div class="note">
-      Выведенное тело позиций ({{ totals.withdrawn | usd }}) в сравнение тоже не входит.
-      Ваши позиции закрывались и открывались заново на те же деньги — «вложено за всё
-      время» {{ totals.deposited | usd }} и «выведено» это один и тот же капитал,
-      прокрученный много раз, а не заведённые снаружи деньги.
-    </div>
-    {% if totals.fees_unclaimed and totals.fees_unclaimed > 0 %}
-    <div class="note">
-      Несобранные комиссии ({{ totals.fees_unclaimed | usd }}) показаны отдельной плиткой
-      и в сравнение не входят: они ещё не в позиции, а на счету пула.
+      <b>Замечания последней синхронизации:</b>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        {% for e in status.last_sync.errors[:8] %}<li>{{ e }}</li>{% endfor %}
+      </ul>
     </div>
     {% endif %}
   </div>
 </div>
-{% endif %}
 
 <div class="card" style="margin-top:16px">
-  <h2>Задаётся в .env</h2>
-  <div class="body">
+  <details>
+    <summary class="card-summary">Что задаётся только в .env</summary>
+    <div class="body">
     <dl class="kv">
-      <dt>Порог health factor для алерта</dt><dd>{{ config.ALERT_HEALTH_FACTOR }}</dd>
-      <dt>Пауза против дребезга</dt><dd>{{ (config.ALERT_COOLDOWN / 60) | round(0) }} мин</dd>
       <dt>Обновление активных позиций</dt><dd>каждые {{ config.LIVE_INTERVAL }} с</dd>
       <dt>Точка на графике капитала</dt><dd>раз в {{ (config.SNAPSHOT_INTERVAL / 60) | round(0) }} мин</dd>
       <dt>Уведомления в Telegram</dt>
@@ -204,6 +130,7 @@
           {% else %}<span class="status off">— не настроены</span>{% endif %}</dd>
     </dl>
     <div class="note">Эти параметры меняются в файле <code>.env</code> и требуют перезапуска.</div>
-  </div>
+    </div>
+  </details>
 </div>
 {% endblock %}

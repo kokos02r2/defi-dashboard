@@ -22,8 +22,10 @@
   <span class="spacer" style="flex:1"></span>
 
   <div class="seg" role="group" aria-label="Период графика">
+    {# По умолчанию сутки: чаще всего смотрят «что было сегодня», а не за месяц #}
+    <button type="button" data-days="1" aria-pressed="true">24ч</button>
     <button type="button" data-days="7" aria-pressed="false">7д</button>
-    <button type="button" data-days="30" aria-pressed="true">30д</button>
+    <button type="button" data-days="30" aria-pressed="false">30д</button>
     <button type="button" data-days="90" aria-pressed="false">90д</button>
     <button type="button" data-days="1825" aria-pressed="false">всё</button>
   </div>
@@ -33,7 +35,7 @@
   <div class="chart-head">
     <h2>Капитал во времени</h2>
     <span class="spacer"></span>
-    <span class="meta" id="chart-note" style="font-size:12.5px;color:var(--ink-muted)"></span>
+    <span id="chart-note" class="meta"></span>
   </div>
   <div class="legend" id="chart-legend" hidden>
     <span><i style="background:var(--series-1)"></i>Чистая стоимость</span>
@@ -68,7 +70,20 @@
 <script src="/static/chartkit.js"></script>
 <script>
 const WALLET = {{ wallet_id or 'null' }};
-let chart = null, days = 30;
+// сутки по умолчанию — то же значение, что отмечено кнопкой в разметке
+let chart = null, days = 1;
+
+// Подпись периода строится по ФАКТИЧЕСКОЙ длине, которую вернул сервер, а не по
+// выбранной кнопке: на трёхдневной истории «за 30д» было бы неправдой, а «за 3 дн.»
+// сразу объясняет, почему цифра меньше ожидаемой.
+function periodLabel(hours) {
+  if (hours === null || hours === undefined) return "";
+  if (hours < 47) return "за " + Math.round(hours) + " ч";
+  const days = Math.round(hours / 24);
+  const tail = days % 10 === 1 && days % 100 !== 11 ? "день"
+             : (days % 10 >= 2 && days % 10 <= 4 && (days % 100 < 12 || days % 100 > 14) ? "дня" : "дней");
+  return "за " + days + " " + tail;
+}
 
 async function loadChart() {
   const url = "/api/chart?days=" + days + (WALLET ? "&wallet=" + WALLET : "");
@@ -77,8 +92,32 @@ async function loadChart() {
   const d = await r.json();
   const n = d.labels.length;
 
-  document.getElementById("chart-note").textContent =
-    n ? ChartKit.pointsNote(n) : "Точек ещё нет — график появится после нескольких обновлений";
+  // В углу карточки — та же пара цифр, что в плитке: стоимость и сутки. Число точек
+  // отсюда убрано, оно интересно только пока графика ещё нет, — тогда и показываем.
+  const note = document.getElementById("chart-note");
+  if (!n) {
+    note.className = "meta";
+    note.textContent = "Точек ещё нет — график появится после нескольких обновлений";
+  } else if (d.change === null || d.change === undefined) {
+    // сравнивать не с чем — показываем только стоимость, крупно, без выдуманных процентов
+    note.className = "chart-now";
+    note.innerHTML = '<span class="val"></span><span class="per"></span>';
+    note.querySelector(".val").textContent = ChartKit.usd(d.net_now);
+    note.querySelector(".per").textContent = ChartKit.pointsNote(n);
+  } else {
+    const up = d.change > 0, flat = d.change === 0;
+    note.className = "chart-now " + (flat ? "" : (up ? "up" : "down"));
+    // две строки: сверху сама стоимость, снизу изменение с периодом. Собирается из
+    // элементов, а не из строки, — числа приходят от нас, но привычка полезная.
+    note.innerHTML = '<span class="val"></span><span class="chg">'
+      + '<b></b><span class="per"></span></span>';
+    note.querySelector(".val").textContent = ChartKit.usd(d.net_now);
+    note.querySelector(".chg b").textContent =
+      (flat ? "·" : (up ? "▲" : "▼")) + " "
+      + Math.abs(d.change_pct).toFixed(2) + "%   "
+      + (up ? "+" : "−") + ChartKit.usd(Math.abs(d.change));
+    note.querySelector(".chg .per").textContent = periodLabel(d.change_hours);
+  }
 
   const hasDebt = d.debt.some(v => v && v > 0);
   document.getElementById("chart-legend").hidden = !hasDebt;
@@ -155,6 +194,8 @@ applyWalletGroups();
 ChartKit.rangeButtons(document.querySelector(".filters .seg"), d => { days = d; loadChart(); });
 document.addEventListener("themechange", loadChart);   // цвета берутся из CSS-переменных
 loadChart();
-setInterval(loadChart, 300000);
+// та же минута, что у htmx-обновления плиток: иначе в углу графика и в плитке
+// какое-то время висели бы разные цифры про одно и то же
+setInterval(loadChart, 60000);
 </script>
 {% endblock %}

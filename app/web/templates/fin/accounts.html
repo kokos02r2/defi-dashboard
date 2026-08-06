@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Счета — Личные финансы{% endblock %}
+{% set active = 'fin_acc' %}
+
+{% block content %}
+<h1 class="page">Счета</h1>
+<div class="page-sub">
+  Карта каждого банка, наличные, счёт в другой валюте. Счёт нужен для двух вещей:
+  сказать, из какой выписки пришла операция, и задать валюту по умолчанию.
+  <b>Остатки не ведутся</b> — об этом ниже.
+</div>
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px"><span class="ic">✓</span><span>Сохранено</span></div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">▲</span><span>{{ error }}</span></div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>{{ 'Изменить счёт' if editing else 'Новый счёт' }}</h2>
+  <div class="body">
+    <form method="post"
+          action="{{ ('/fin/accounts/%d/edit' % editing.id) if editing else '/fin/accounts/add' }}"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Название</span>
+        <input type="text" name="name" style="width:220px" required
+               value="{{ editing.name if editing else '' }}"
+               placeholder="Sabadell, основная карта">
+      </label>
+      <label>
+        <span class="fl">Валюта</span>
+        <select name="currency" style="min-width:110px">
+          {% for c in currencies %}
+            <option value="{{ c }}"
+              {{ 'selected' if (editing and editing.currency == c) or (not editing and c == base) }}>
+              {{ c }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span class="fl">Заметка</span>
+        <input type="text" name="note" style="width:100%"
+               value="{{ editing.note if editing else '' }}"
+               placeholder="выписку скачиваю в xlsx за месяц">
+      </label>
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Добавить' }}</button>
+      {% if editing %}<a class="btn ghost" href="/fin/accounts">Отмена</a>{% endif %}
+    </form>
+    <div class="note">
+      Валюта счёта — это валюта по умолчанию для его операций, а не жёсткое правило:
+      покупку в поездке можно записать в другой валюте.
+    </div>
+  </div>
+</div>
+
+{% if rows %}
+<div class="card" style="margin-bottom:16px">
+  <h2>Список</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th>Счёт</th><th>Валюта</th><th class="num">Операций</th>
+            <th class="num">Потрачено всего</th><th>Состояние</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for a in rows %}
+        <tr class="{{ 'dimmed' if a.archived }}{{ ' editing' if editing and editing.id == a.id }}">
+          <td>
+            <div class="name">{{ a.name }}</div>
+            {% if a.note %}<div class="meta">{{ a.note }}</div>{% endif %}
+          </td>
+          <td class="meta">{{ a.currency }}</td>
+          <td class="num meta">{{ counts.get(a.id, 0) }}</td>
+          <td class="num">{{ spent.get(a.id) | money(base) if spent.get(a.id) else '—' }}</td>
+          <td>
+            {% if a.archived %}<span class="status off">в архиве</span>
+            {% elif a.import_map %}<span class="status ok">● колонки выписки известны</span>
+            {% else %}<span class="status ok">● используется</span>{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn ghost" href="/fin/accounts?edit={{ a.id }}" title="Изменить">✎</a>
+            <form method="post" action="/fin/accounts/{{ a.id }}/archive" style="display:inline">
+              <button class="btn ghost" type="submit"
+                      title="{{ 'Вернуть из архива' if a.archived else 'Убрать из выбора, ничего не потеряв' }}">
+                {{ '↩' if a.archived else '⌦' }}
+              </button>
+            </form>
+            {% if not counts.get(a.id, 0) %}
+            <form method="post" action="/fin/accounts/{{ a.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить счёт «{{ a.name }}»?')">
+              <button class="btn ghost danger" type="submit" title="Удалить">✕</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Счёт с операциями удалить нельзя — только в архив: удаление унесло бы с собой всю
+      историю по этой карте, и вернуть её можно было бы только повторной загрузкой всех
+      выписок. Архив убирает счёт из выбора, ничего не теряя.
+    </div>
+    <div class="note">
+      <b>Почему нет остатков.</b> Остаток на карте требует, чтобы в базу попала каждая
+      до последней операция и начальное сальдо. Выписки заливаются раз в месяц и не
+      всегда целиком, так что остаток начал бы тихо расходиться с реальностью — а
+      неверная цифра хуже отсутствующей. Вопрос «на что ушли деньги» она всё равно не
+      решает: на него отвечают категории.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Валюта отчётов</h2>
+  <div class="body">
+    <form method="post" action="/fin/settings/currency"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Сводить всё в</span>
+        <select name="currency" style="min-width:110px">
+          {% for c in currencies %}
+            <option value="{{ c }}" {{ 'selected' if c == base }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="btn primary" type="submit"
+              onclick="return confirm('Сменить валюту отчётов? Все операции будут пересчитаны по курсам на их даты — это может занять время при первом обращении к архиву ЦБ.')">
+        Сменить и пересчитать
+      </button>
+    </form>
+    {% if no_rate %}
+    {# Отдельной формой, а не кнопкой внутри предыдущей: вложенные формы браузер
+       разбирает по-своему, и внутренняя кнопка отправляла бы внешнюю форму. #}
+    <form method="post" action="/fin/settings/recompute" style="margin-top:10px">
+      <button class="btn" type="submit">Досчитать {{ no_rate }} без курса</button>
+    </form>
+    {% endif %}
+    <div class="note">
+      Операции хранятся в своих валютах, а в отчётах сводятся в одну — иначе «потрачено
+      за месяц» не складывается. Пересчёт делается по официальному курсу ЦБ <b>на дату
+      операции</b> и записывается вместе с ней: история не должна меняться от
+      сегодняшнего курса.
+    </div>
+    <div class="note">
+      За выходные и праздники курс не публикуется — берётся ближайший предыдущий рабочий
+      день. Смена валюты пересчитывает <b>все</b> операции: если оставить старые как
+      есть, в одной сумме сложились бы евро с рублями, и заметить это было бы почти
+      невозможно.
+    </div>
+    {% if no_rate %}
+    <div class="note">
+      <b>{{ no_rate }}</b> {{ no_rate | plural('операция', 'операции', 'операций') }} без
+      пересчёта: в момент записи курс получить не удалось. В итоги
+      {{ no_rate | plural('она не входит', 'они не входят', 'они не входят') }} —
+      досчитайте кнопкой выше.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

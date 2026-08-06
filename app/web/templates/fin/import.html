@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Загрузка выписки — Личные финансы{% endblock %}
+{% set active = 'fin_imp' %}
+
+{% block content %}
+<h1 class="page">Загрузка выписки</h1>
+<div class="page-sub">
+  Файл из банка — Excel или CSV. Колонки дашборд угадывает сам, но перед записью
+  показывает предпросмотр: подтвердить или поправить сопоставление нужно вам.
+  Повторная загрузка того же файла ничего не испортит — уже записанные операции
+  распознаются и не добавляются второй раз.
+</div>
+
+{% if saved == 'revert' %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">✓</span><span>Загрузка отменена, добавленные ею операции удалены</span>
+</div>
+{% elif saved %}
+<div class="alert info" style="margin-bottom:16px">
+  <span class="ic">✓</span>
+  <span>Выписка обработана — итог в таблице ниже.
+    <a href="/fin/tx?uncat=1">Разобрать по категориям</a></span>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if not accounts %}
+<div class="card">
+  <div class="empty">
+    Сначала заведите <a href="/fin/accounts">счёт</a>: выписка всегда относится к
+    конкретной карте, и от счёта берётся валюта по умолчанию.
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin-bottom:16px">
+  <h2>Новый файл</h2>
+  <div class="body">
+    <form method="post" action="/fin/import/upload" enctype="multipart/form-data"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Счёт, к которому относится выписка</span>
+        <select name="account" style="min-width:220px" required>
+          {% for a in accounts %}
+            <option value="{{ a.id }}">{{ a.name }} · {{ a.currency }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label style="flex:1;min-width:240px">
+        <span class="fl">Файл .xlsx или .csv</span>
+        <input type="file" name="file" accept=".xlsx,.xlsm,.csv,.txt,.tsv" required
+               style="width:100%">
+      </label>
+      <button class="btn primary" type="submit">Загрузить и посмотреть</button>
+    </form>
+    <div class="note">
+      Записи ещё не появятся: сначала откроется предпросмотр. Формат .pdf не читается —
+      из него нельзя надёжно достать таблицу, а «почти правильные» суммы хуже, чем
+      никакие. Старый .xls тоже: сохраните его в банке или в Excel как .xlsx.
+      Файл после обработки удаляется с диска — лишняя копия выписки на сервере не нужна.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if batches %}
+<div class="card">
+  <h2>Что уже загружалось</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Когда</th><th>Файл</th><th>Счёт</th>
+          <th class="num">Строк</th><th class="num">Добавлено</th>
+          <th class="num">Повторов</th><th class="num">Пропущено</th>
+          <th>Замечания</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in batches %}
+        <tr class="{{ 'dimmed' if b.reverted_at }}">
+          <td class="meta">
+            <time class="localdt" datetime="{{ b.created_at | iso_utc }}">{{ b.created_at | ts_short }}</time>
+          </td>
+          <td>{{ b.filename or '—' }}</td>
+          <td class="meta">{{ b.account.name if b.account else '—' }}</td>
+          <td class="num meta">{{ b.total }}</td>
+          <td class="num">{% if b.added %}<b>{{ b.added }}</b>{% else %}0{% endif %}</td>
+          <td class="num meta">{{ b.duplicates }}</td>
+          <td class="num meta">
+            {{ b.ignored + b.failed }}
+            {%- if b.failed %} <span class="status warn" title="строки не разобрались">
+              {{ b.failed }} с ошибкой</span>{% endif %}
+          </td>
+          <td class="meta">
+            {% if b.reverted_at %}<span class="status off">отменено</span>
+            {% else %}{{ b.note or '—' }}{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            {% if not b.reverted_at and b.added %}
+            <form method="post" action="/fin/import/batch/{{ b.id }}/revert" style="display:inline"
+                  onsubmit="return confirm('Отменить загрузку {{ b.filename }}? Будут удалены {{ b.added }} добавленных ею операций. Категории, расставленные вручную, тоже пропадут вместе с ними.')">
+              <button class="btn ghost danger" type="submit">Отменить загрузку</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      «Повторов» — строки, которые уже были в базе: так и должно быть, если выписки
+      перекрываются по датам. «Пропущено» — отсеянные правилами «не учитывать» плюс
+      строки, которые не удалось разобрать. Отмена загрузки удаляет только те операции,
+      которые добавила именно она.
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -8,3 +8,4 @@ passlib[argon2]>=1.7.4
 itsdangerous>=2.2
 python-multipart>=0.0.9
 python-dotenv>=1.0
+openpyxl>=3.1

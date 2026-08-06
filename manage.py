@@ -11,6 +11,7 @@
     .venv/bin/python manage.py notify-test      # проверить связь с ботом
     .venv/bin/python manage.py digest           # отправить сводку прямо сейчас
     .venv/bin/python manage.py backfill-prices [--apply]   # досчитать цены событий
+    .venv/bin/python manage.py fin-recompute [--all]       # пересчёт личных операций
 """
 
 from __future__ import annotations
@@ -235,6 +236,7 @@ def notify_chatid(_argv: list[str]) -> None:
 
 
 def stats(_argv: list[str]) -> None:
+    from app.db.models import FinAccount, FinTx
     with session_scope() as db:
         def n(model, *where):
             return db.scalar(select(func.count()).select_from(model).where(*where)) or 0
@@ -243,12 +245,34 @@ def stats(_argv: list[str]) -> None:
         print(f"  событий        : {n(PositionEvent)}")
         print(f"  снапшотов      : {n(Snapshot)}")
         print(f"  цен в кэше     : {n(PriceCache)}")
+        if n(FinTx):
+            print(f"  личных операций: {n(FinTx)} на {n(FinAccount)} счетах "
+                  f"(без курса {n(FinTx, FinTx.amount_base.is_(None))})")
+
+
+def fin_recompute(argv: list[str]) -> None:
+    """Досчитывает пересчёт личных операций в валюту отчётов.
+
+    Нужно, если в момент записи не было связи с ЦБ: такие операции не входят в итоги,
+    и это видно в интерфейсе. С --all пересчитываются вообще все — например, после
+    ручной правки базы.
+    """
+    from app.core.finance import recompute_base
+    from app.db.prefs import base_currency
+    only_missing = "--all" not in argv
+    with session_scope() as db:
+        print(f"  валюта отчётов: {base_currency(db)}")
+        done, failed = recompute_base(db, only_missing=only_missing)
+        print(f"  пересчитано: {done}")
+        if failed:
+            print(f"  не удалось получить курс: {failed} — попробуйте позже")
 
 
 COMMANDS = {"adduser": adduser, "passwd": passwd, "wallet-add": wallet_add,
             "wallet-list": wallet_list, "refresh": do_refresh, "stats": stats,
             "notify-test": notify_test, "notify-chatid": notify_chatid,
-            "digest": digest, "backfill-prices": backfill_prices}
+            "digest": digest, "backfill-prices": backfill_prices,
+            "fin-recompute": fin_recompute}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

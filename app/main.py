@@ -15,6 +15,7 @@ from app.auth import ensure_admin
 from app.db.base import init_db, session_scope
 from app.jobs import scheduler
 from app.web.routes import router
+from app.web.routes_fin import router as fin_router
 from app.web.templating import TEMPLATES_DIR
 
 logging.basicConfig(
@@ -51,6 +52,9 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory=str(TEMPLATES_DIR.parent / "static")), name="static")
 app.include_router(router)
+# Личные финансы — отдельное пространство под /fin. Общего с крипто-частью
+# у него только вход и вёрстка, поэтому и роутер свой.
+app.include_router(fin_router)
 
 # require_user кидает HTTPException(307, Location=/login) — стандартный обработчик
 # FastAPI отдаёт его вместе с заголовком, и браузер уходит на форму входа сам.

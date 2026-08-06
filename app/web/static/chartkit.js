@@ -14,31 +14,58 @@ window.ChartKit = (function () {
       {minimumFractionDigits: digits, maximumFractionDigits: digits});
   }
 
+  /* Сумма в произвольной валюте — для личных финансов, где база не доллар.
+     Знак ставится так же, как в серверном фильтре money: у доллара и рубля впереди,
+     у остальных после числа. Иначе подпись на графике и цифра в таблице выглядели бы
+     как разные величины. */
+  const SYMBOLS = {EUR: "€", USD: "$", RUB: "₽", GBP: "£", CHF: "Fr",
+                   TRY: "₺", KZT: "₸", GEL: "₾", RSD: "din", AED: "dh"};
+
+  function money(v, code, digits = 2) {
+    if (v === null || v === undefined || !Number.isFinite(v)) return "н/д";
+    const sym = SYMBOLS[code] || code || "";
+    const sign = v < 0 ? "-" : "";
+    const num = Math.abs(v).toLocaleString("ru-RU",
+      {minimumFractionDigits: digits, maximumFractionDigits: digits});
+    return (code === "USD" || code === "RUB") ? sign + sym + num : sign + num + " " + sym;
+  }
+
   /**
    * Формат подписей оси Y подбирается под РАЗБРОС значений, а не под их величину.
    * Портфель, который весь день стоит около 12 000, при округлении до тысяч даёт
    * восемь одинаковых «$12k» — ось перестаёт что-либо значить.
    */
-  function tickFormatter(values) {
+  function tickFormatter(values, code) {
+    // Валюта параметром, а не жёстко доллар: те же оси рисуют личные расходы в евро,
+    // и подпись «$1 200» там была бы просто неверной.
+    const cur = code || "USD";
+    const sym = SYMBOLS[cur] || cur;
+    const before = cur === "USD" || cur === "RUB";
+    const put = (v, body) => {
+      const s = v < 0 ? "-" : "";
+      const b = body(Math.abs(v));
+      return before ? s + sym + b : s + b + " " + sym;
+    };
+
     const nums = values.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    if (!nums.length) return v => "$" + Math.round(v);
+    if (!nums.length) return v => put(v, a => String(Math.round(a)));
     const spread = Math.max(...nums) - Math.min(...nums);
     const scale = Math.max(...nums.map(Math.abs));
 
     if (spread >= 20000 || (spread === 0 && scale >= 20000)) {
-      return v => Math.abs(v) >= 1e6 ? "$" + (v / 1e6).toFixed(1) + "M"
-                                     : "$" + Math.round(v / 1000) + "k";
+      return v => put(v, a => a >= 1e6 ? (a / 1e6).toFixed(1) + "M"
+                                       : Math.round(a / 1000) + "k");
     }
     if (spread >= 2000) {
-      return v => "$" + Math.round(v).toLocaleString("ru-RU");
+      return v => put(v, a => Math.round(a).toLocaleString("ru-RU"));
     }
     if (spread >= 20) {
-      return v => "$" + v.toLocaleString("ru-RU",
-        {minimumFractionDigits: 0, maximumFractionDigits: 0});
+      return v => put(v, a => a.toLocaleString("ru-RU",
+        {minimumFractionDigits: 0, maximumFractionDigits: 0}));
     }
     // совсем узкий коридор — иначе все подписи схлопнутся в одно число
-    return v => "$" + v.toLocaleString("ru-RU",
-      {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    return v => put(v, a => a.toLocaleString("ru-RU",
+      {minimumFractionDigits: 2, maximumFractionDigits: 2}));
   }
 
   /** Подписи по оси X: чем шире период, тем крупнее шаг. */
@@ -122,5 +149,6 @@ window.ChartKit = (function () {
     });
   }
 
-  return {css, usd, tickFormatter, labelFormatter, mark, options, pointsNote, rangeButtons};
+  return {css, usd, money, tickFormatter, labelFormatter, mark, options, pointsNote,
+          rangeButtons};
 })();

@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}Предпросмотр выписки — Личные финансы{% endblock %}
+{% set active = 'fin_imp' %}
+
+{% block content %}
+<h1 class="page">Предпросмотр: {{ meta.filename }}</h1>
+<div class="page-sub">
+  Счёт <b>{{ acc.name if acc else '—' }}</b>, валюта по умолчанию {{ acc.currency if acc else '—' }}.
+  Строк с данными в файле: <b>{{ total }}</b>. Проверьте, что колонки определены верно,
+  и подтвердите — только после этого операции попадут в базу.
+</div>
+
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if not m.ok %}
+<div class="alert warning" style="margin-bottom:16px">
+  <span class="ic">▲</span>
+  <span>Не удалось понять, где дата и где сумма. Укажите колонки сами в форме ниже.</span>
+</div>
+{% elif bad %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    В первых строках {{ bad }} не {{ bad | plural('разобралась', 'разобрались', 'разобрались') }}.
+    Обычно это шапка или строка «итого», попавшая в данные — тогда всё в порядке, такие
+    строки просто не запишутся. Но если не разбирается каждая вторая, проверьте
+    сопоставление колонок: скорее всего, перепутаны дата и сумма.
+  </span>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Какая колонка что означает</h2>
+  <div class="body">
+    <form method="post" action="/fin/import/{{ token }}/remap"
+          style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Строка шапки</span>
+        <select name="header_row" style="min-width:130px">
+          <option value="-1" {{ 'selected' if m.header_row < 0 }}>шапки нет</option>
+          {% for i in range(0, 12) %}
+            <option value="{{ i }}" {{ 'selected' if m.header_row == i }}>строка {{ i + 1 }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Дата</span>
+        <select name="day" style="min-width:150px" required>
+          <option value="">— не выбрано —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.day == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Сумма одной колонкой</span>
+        <select name="amount" style="min-width:150px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.amount == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">…либо расход</span>
+        <select name="expense" style="min-width:140px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.expense == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">…и приход</span>
+        <select name="income" style="min-width:140px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.income == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Описание</span>
+        <select name="note" style="min-width:160px">
+          <option value="">— нет —</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.note == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">Валюта</span>
+        <select name="currency" style="min-width:130px">
+          <option value="">со счёта</option>
+          {% for lb in labels %}
+            <option value="{{ loop.index0 }}" {{ 'selected' if m.currency == loop.index0 }}>{{ lb }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="check-inline">
+        <input type="checkbox" name="expense_negative" value="1"
+               {{ 'checked' if m.expense_negative }}>
+        <span>Расход записан минусом</span>
+      </label>
+      <button class="btn" type="submit">Пересчитать предпросмотр</button>
+    </form>
+    <div class="note">
+      Заполните <b>либо</b> «сумму одной колонкой», <b>либо</b> пару «расход/приход» —
+      банки делают и так, и так. Если сумма одной колонкой, знак решает, расход это или
+      доход; галочка ниже говорит, каким знаком банк помечает расход. Ошибка здесь
+      переворачивает всё наоборот, поэтому посмотрите на предпросмотр: расходов почти
+      всегда больше, чем доходов.
+    </div>
+    <div class="note">
+      Сопоставление сохраняется на счёте: следующую выписку этого банка дашборд разберёт
+      сразу, без этого шага.
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="chart-head">
+    <h2>Как будет записано</h2>
+    <span class="spacer"></span>
+    <span class="meta" style="font-size:12.5px;color:var(--ink-muted)">
+      первые {{ preview | length }} из {{ total }}
+    </span>
+  </div>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr><th class="num">Строка</th><th>Дата</th><th>Вид</th><th class="num">Сумма</th>
+            <th>Валюта</th><th>Описание</th></tr>
+      </thead>
+      <tbody>
+        {% for r in preview %}
+        <tr class="{{ 'dimmed' if r.error }}">
+          <td class="num meta">{{ r.index + 1 }}</td>
+          <td>{{ r.day | dmy if r.day else '—' }}</td>
+          <td class="meta">
+            {% if r.error %}<span class="status warn">{{ r.error }}</span>
+            {% else %}{{ 'доход' if r.kind == 'income' else 'расход' }}{% endif %}
+          </td>
+          <td class="num">{{ r.amount | money(r.currency) if not r.error else '—' }}</td>
+          <td class="meta">{{ r.currency }}</td>
+          <td>{{ r.note or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body">
+    <form method="post" action="/fin/import/{{ token }}/apply" style="display:inline">
+      <button class="btn primary" type="submit" {{ 'disabled' if not m.ok }}>
+        Записать {{ total }} {{ total | plural('строку', 'строки', 'строк') }}
+      </button>
+    </form>
+    <a class="btn ghost" href="/fin/import">Отменить</a>
+    <div class="note">
+      Правила автокатегоризации применятся сразу при записи. Строки, попавшие под
+      правило «не учитывать», не запишутся вовсе. Всё остальное можно будет разобрать
+      в «Операциях» — там есть отдельный список без категории.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <details>
+    <summary class="card-summary">Начало файла как есть</summary>
+    <div class="body">
+      <div class="note" style="margin-top:0">
+        Первые строки без разбора — чтобы видеть, где в файле шапка и с какой строки
+        начинаются данные.
+      </div>
+      <div class="table-scroll">
+        <table class="positions">
+          <tbody>
+            {% for row in head %}
+            <tr class="{{ 'hlrow' if loop.index0 == m.header_row }}">
+              <td class="num meta">{{ loop.index0 + 1 }}</td>
+              {% for cell in row %}
+              <td class="meta" style="white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis">
+                {{ cell if cell is not none else '' }}
+              </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+</div>
+{% endblock %}

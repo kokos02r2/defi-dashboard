@@ -222,7 +222,11 @@ select, input[type="text"], input[type="password"], input[type="date"] {
   font-size: 13px; font-weight: 560; color: var(--ink-2);
   letter-spacing: .01em;
 }
-.card > .body { padding: 16px; }
+/* и внутри раскрывашки тоже: правило только для прямого потомка карточки
+   оставляло свёрнутую справку без отступов, текст упирался в края */
+.card > .body,
+.card > details > .body { padding: 16px; }
+.card > details > .body { padding-top: 0; }
 
 /* ------------------------------------------------------------ KPI-плитки */
 
@@ -273,6 +277,8 @@ a.tile-link:hover .go, a.tile-link:focus-visible .go { opacity: 1; }
 /* переключатель периода выравниваем по центру: базовая линия кнопок не совпадает
    с базовой линией заголовка и он «проваливается» */
 .chart-head .seg { align-self: center; }
+/* блок стоимости в две строки выше заголовка — иначе он тянет базовую линию */
+.chart-head .chart-now { align-self: center; }
 /* высота задана вместе с полосой подписей оси, чтобы карточка не обзаводилась
    собственной вертикальной прокруткой */
 .chart-box { padding: 8px 12px 14px; height: 268px; }
@@ -475,3 +481,100 @@ h1.page { font-size: 19px; margin: 0 0 2px; letter-spacing: -.01em; }
 .legend i.acc-2 { background: var(--series-3); }
 .legend i.acc-3 { background: var(--good); }
 .legend i.acc-4 { background: var(--warning); }
+
+/* Изменение за сутки в плитке: крупнее обычной подписи — это вторая по важности
+   цифра после самой стоимости. Направление несёт стрелка, цвет усиливает. */
+.tile .sub.delta-24h {
+  font-size: 13.5px; font-weight: 560; margin-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.tile .sub.delta-24h.up { color: var(--good-text); }
+.tile .sub.delta-24h.down { color: var(--critical); }
+.tile .sub.delta-24h .meta { font-weight: 400; color: var(--ink-muted); font-size: 12px; }
+
+/* Стоимость и изменение в углу карточки графика — в две строки, столбиком к правому
+   краю: одной строкой три числа подряд читаются как одно длинное. Сама стоимость
+   набрана нейтральным цветом, как в плитке, — окрашено только изменение, и
+   направление всё равно несёт стрелка. */
+#chart-note.meta { font-size: 12.5px; color: var(--ink-muted); }
+.chart-now {
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 2px; line-height: 1.15; white-space: nowrap;
+}
+.chart-now .val {
+  font-size: 23px; font-weight: 600; letter-spacing: -.02em; color: var(--ink);
+}
+.chart-now .chg {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  font-size: 13.5px; font-weight: 560; font-variant-numeric: tabular-nums;
+}
+.chart-now.up .chg { color: var(--good-text); }
+.chart-now.down .chg { color: var(--critical); }
+.chart-now .per { font-size: 12px; font-weight: 400; color: var(--ink-muted); }
+
+/* Справочная карточка под раскрывашкой: полезна, но занимать экран каждый раз
+   ей незачем. Заголовок выглядит как у обычной карточки. */
+.card > details > summary.card-summary {
+  cursor: pointer; list-style: none;
+  padding: 14px 16px; font-size: 13px; font-weight: 560; color: var(--ink-2);
+  letter-spacing: .01em;
+}
+.card > details > summary.card-summary::-webkit-details-marker { display: none; }
+.card > details > summary.card-summary::before { content: "▸ "; color: var(--ink-muted); }
+.card > details[open] > summary.card-summary::before { content: "▾ "; }
+
+/* Флажок в одну строку рядом с полями ввода. Высокая плашка .chain-pick годится
+   для сетки выбора, но в ряду с инпутами ломает выравнивание по нижнему краю. */
+.check-inline {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--ink); cursor: pointer;
+  padding: 7px 0;   /* совпадает по высоте с input: 6px отступа + строка текста */
+}
+.check-inline input { width: 16px; height: 16px; accent-color: var(--series-1); }
+
+/* ---------------------------------------------- личные финансы: второе пространство */
+
+/* Переключатель пространств стоит на месте названия и служит им же: иначе в шапке
+   рядом оказались бы название и переключатель, говорящие одно и то же. */
+.spaces {
+  display: inline-flex; gap: 2px; padding: 2px;
+  border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-sunken);
+}
+.spaces a {
+  text-decoration: none; font-size: 13px; font-weight: 560; color: var(--ink-muted);
+  padding: 5px 11px; border-radius: 7px; white-space: nowrap;
+}
+.spaces a:hover { color: var(--ink); }
+.spaces a.on {
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .07);
+}
+
+/* Подпись над полем ввода. Раньше эти же три свойства повторялись инлайном в каждой
+   форме — при правке приходилось искать все копии. */
+label > .fl {
+  display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 5px;
+}
+
+/* Полоска доли прямо в ячейке таблицы — вместо круговой диаграммы. Она не может
+   разойтись с числом рядом, читается на узком экране и не требует согласовывать
+   цвета секторов с подписями. */
+.cbar {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px;
+  min-width: 130px;
+}
+.cbar > i {
+  height: 8px; border-radius: 3px; background: var(--series-1); min-width: 2px;
+}
+.cbar > span {
+  font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+}
+
+/* Приглушённая строка: архивный счёт, отменённая загрузка, неразобранная строка файла.
+   Отдельный класс, а не row-off: тот в таблицах позиций СКРЫВАЕТ строку целиком. */
+table.positions tr.dimmed > td { color: var(--ink-muted); }
+table.positions tr.dimmed .name { font-weight: 500; }
+/* Строка шапки в показе файла «как есть» — чтобы видеть, что дашборд считает шапкой */
+table.positions tr.hlrow > td {
+  background: var(--surface-sunken); font-weight: 560; color: var(--ink);
+}

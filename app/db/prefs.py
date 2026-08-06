@@ -24,6 +24,18 @@ DEFAULTS: dict[str, Any] = {
     # завели позицию в новой сети — включили галочку, а не полезли в файл и
     # перезапуск. Значение из .env осталось значением по умолчанию.
     "enabled_chains": None,
+    # Пороги оповещений о позициях. None — берём значение из .env.
+    # Переехали сюда по той же причине, что список сетей: их крутят по ходу дела,
+    # глядя на свои позиции, а не задают один раз при установке.
+    "alert_health_factor": None,
+    "alert_out_of_range": None,
+    "alert_cooldown": None,
+    # Валюта отчётов в разделе личных финансов. Операции хранятся в своих валютах,
+    # а сводить их надо в одну, иначе «потрачено за месяц» не складывается.
+    "fin_base_currency": "EUR",
+    # Заведён ли стартовый список категорий. Флаг нужен, чтобы удалённые категории
+    # не появлялись заново при каждом открытии раздела.
+    "fin_seeded": False,
 }
 
 
@@ -47,6 +59,31 @@ def enabled_chain_keys(db: Session) -> list[str]:
     if isinstance(chosen, list) and chosen:
         return [str(k) for k in chosen]
     return list(config.ENABLED_CHAINS)
+
+
+def alert_settings(db: Session) -> dict:
+    """Пороги оповещений: из настроек, а чего там нет — из .env.
+
+    Приложение читает их на каждом прогоне, поэтому изменённый в интерфейсе порог
+    действует со следующего цикла, без перезапуска.
+    """
+    from app import config
+    p = get_prefs(db)
+    hf = p.get("alert_health_factor")
+    oor = p.get("alert_out_of_range")
+    cd = p.get("alert_cooldown")
+    return {
+        "health_factor": float(hf) if hf is not None else config.ALERT_HEALTH_FACTOR,
+        "out_of_range": bool(oor) if oor is not None else config.ALERT_OUT_OF_RANGE,
+        "cooldown": int(cd) if cd is not None else config.ALERT_COOLDOWN,
+    }
+
+
+def base_currency(db: Session) -> str:
+    """Валюта отчётов личных финансов. Пустое значение недопустимо: без неё нечем
+    складывать операции в разных валютах, и весь раздел показывал бы «н/д»."""
+    code = (get_prefs(db).get("fin_base_currency") or "").upper()
+    return code if len(code) == 3 else "EUR"
 
 
 def save_prefs(db: Session, **changes) -> dict:

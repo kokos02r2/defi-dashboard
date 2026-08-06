@@ -12,6 +12,11 @@
       title="Последнее обновление">
   <i></i>
   {% if status.running %}обновляется…
-  {% elif status.last_live %}{{ status.last_live.started_at[11:16] }} UTC
+  {% elif status.last_live %}
+    {# Метка отдаётся в ISO с зоной, а показывается в поясе браузера: перевести её
+       может только он — сервер не знает, откуда на него смотрят. Текст внутри —
+       запасной вариант на случай, если скрипт не сработает. #}
+    <time class="localtime" datetime="{{ status.last_live.started_at }}"
+      >{{ status.last_live.started_at[11:16] }} UTC</time>
   {% else %}нет данных{% endif %}
 </span>

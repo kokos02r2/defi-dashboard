@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 
@@ -91,6 +91,57 @@ def usd_price(v) -> str:
     return price(v)
 
 
+def money(v, code: str = "EUR", digits: int = 2) -> str:
+    """Сумма в любой валюте: 1 234,56 €, ₽12 300, $980,40.
+
+    Знак валюты у доллара и рубля стоит перед числом, у остальных — после: так их
+    пишут, и «€1 234» читается как опечатка. Сокращений вроде «12.3k» здесь нет
+    сознательно: в личных расходах разница между 12 300 и 12 800 — это не шум.
+    """
+    v = _d(v)
+    if v is None:
+        return "н/д"
+    sym = _SYMBOLS.get((code or "").upper(), (code or "").upper())
+    sign = "-" if v < 0 else ""
+    num = f"{abs(v):,.{digits}f}".replace(",", " ").replace(".", ",")
+    if (code or "").upper() in ("USD", "RUB"):
+        return f"{sign}{sym}{num}"
+    return f"{sign}{num} {sym}"
+
+
+_SYMBOLS = {"EUR": "€", "USD": "$", "RUB": "₽", "GBP": "£", "CHF": "Fr",
+            "TRY": "₺", "KZT": "₸", "GEL": "₾", "RSD": "din", "AED": "dh"}
+
+
+def dmy(v) -> str:
+    """Дата без времени: у операции по карте время из выписки всё равно недоступно."""
+    if not v:
+        return "—"
+    if isinstance(v, (datetime, date)):
+        return v.strftime("%d.%m.%Y")
+    return str(v)
+
+
+MONTHS_RU = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+             "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
+
+
+def month_ru(v) -> str:
+    """«2025-07» или дата -> «июль 2025». Числовой месяц в заголовке не читается."""
+    if not v:
+        return "—"
+    if isinstance(v, (datetime, date)):
+        y, m = v.year, v.month
+    else:
+        try:
+            y, m = (int(x) for x in str(v).split("-")[:2])
+        except (ValueError, IndexError):
+            return str(v)
+    if not 1 <= m <= 12:
+        return str(v)
+    return f"{MONTHS_RU[m - 1]} {y}"
+
+
 def pct(v, digits: int = 2, sign: bool = False) -> str:
     v = _d(v)
     if v is None:
@@ -113,6 +164,22 @@ def ts_short(v) -> str:
     if isinstance(v, datetime):
         return v.strftime("%d.%m %H:%M")
     return datetime.fromtimestamp(v, timezone.utc).strftime("%d.%m %H:%M")
+
+
+def iso_utc(v) -> str:
+    """Метка времени в ISO с зоной — для <time datetime> и пересчёта в поясе браузера.
+
+    Приписывать «Z» к результату isoformat() руками нельзя: у части объектов зона уже
+    есть, и получалось бы «…+00:00Z» — такую строку Date в браузере не разбирает, и
+    время молча превращалось бы в «Invalid Date».
+    """
+    if not v:
+        return ""
+    if isinstance(v, datetime):
+        if v.tzinfo is not None:
+            return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return v.strftime("%Y-%m-%dT%H:%M:%SZ")   # наивное время в базе — это UTC
+    return str(v)
 
 
 def plural(n, one: str, few: str, many: str) -> str:
@@ -140,4 +207,5 @@ FILTERS = {
     "amt": amt, "usd": usd, "usd_short": usd_short, "price": price,
     "usd_price": usd_price, "pct": pct, "ts": ts, "ts_short": ts_short,
     "days_since": days_since, "plural": plural,
+    "money": money, "dmy": dmy, "month_ru": month_ru, "iso_utc": iso_utc,
 }

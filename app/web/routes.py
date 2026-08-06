@@ -28,10 +28,12 @@ from app.core.inrange import for_position as inrange_for, for_positions as inran
 from app.core.lots import known_symbols, resolve_coin, summarize
 from app.core.market import market_rates
 from app.core.prices import PriceService
+from app.core.portfolio import net_change
+from app.core.pricealerts import DIRECTIONS, SYMBOLS
 from app.db.base import get_session
-from app.db.prefs import (enabled_chain_keys, get_prefs, parse_amount,
-                          parse_money, save_prefs)
-from app.db.models import (Alert, BtcBuy, Position, PositionEvent, PositionSnapshot, Snapshot,
+from app.db.prefs import (alert_settings, enabled_chain_keys, get_prefs,
+                          parse_amount, parse_money, save_prefs)
+from app.db.models import (Alert, BtcBuy, Position, PriceAlert, PositionEvent, PositionSnapshot, Snapshot,
                            TempDeposit, TokenLot, User, Wallet)  # noqa: F401 — Alert нужен для статуса доставки
 from app.jobs import scheduler
 from app.jobs.refresh import add_wallet, get_status
@@ -84,7 +86,7 @@ def logout(request: Request):
 # --------------------------------------------------------------------------------------
 
 def _totals(positions: list[Position], initial: float | None = None,
-            temp: float = 0.0) -> dict:
+            temp: float = 0.0, hf_threshold: float | None = None) -> dict:
     open_pos = [p for p in positions if p.is_open]
     value = sum(p.value_usd or 0 for p in open_pos)
     debt = sum(p.debt_usd or 0 for p in open_pos)
@@ -144,7 +146,37 @@ def _totals(positions: list[Position], initial: float | None = None,
         "by_protocol": by_proto, "by_chain": by_chain, "apr": apr,
         "out_of_range": sum(1 for p in open_pos if p.in_range is False),
         "at_risk": sum(1 for p in open_pos if p.health_factor is not None
-                       and p.health_factor < config.ALERT_HEALTH_FACTOR),
+                       and p.health_factor < (hf_threshold or config.ALERT_HEALTH_FACTOR)),
+    }
+
+
+def _with_change(db: Session, totals: dict, wallet_id: int | None) -> dict:
+    """Дополняет итоги изменением чистой стоимости за сутки.
+
+    Считается по снапшотам, а не по разнице с чем-либо в памяти: это тот же ряд, что
+    рисует график капитала, поэтому плитка и картинка не могут разойтись.
+    """
+    delta, pct, _ = net_change(db, totals["net"], hours=24, wallet_id=wallet_id)
+    totals["change_24h"] = delta
+    totals["change_24h_pct"] = pct
+    return totals
+
+
+def _notify_stats(db: Session) -> dict:
+    """Состояние доставки уведомлений — для карточки диагностики.
+
+    Только наличие настроек, без обращения к Telegram: дёргать getMe на каждый рендер
+    страницы нельзя, это сетевой запрос с секундными таймаутами.
+    """
+    return {
+        "configured": config.telegram_configured(),
+        "has_token": bool(config.TELEGRAM_BOT_TOKEN),
+        "has_chat": bool(config.TELEGRAM_CHAT_ID),
+        "enabled": config.NOTIFY_ENABLED,
+        "sent": db.scalar(select(func.count(Alert.id)).where(Alert.notify_state == "sent")) or 0,
+        "failed": db.scalar(select(func.count(Alert.id)).where(Alert.notify_state == "failed")) or 0,
+        "last": db.scalar(select(Alert).where(Alert.notify_state == "sent")
+                          .order_by(Alert.notified_at.desc()).limit(1)),
     }
 
 
@@ -249,7 +281,9 @@ def dashboard(request: Request, wallet: str | None = None, closed: str = "0",
         "user": user, "wallets": wallets, "wallet_id": wallet_id,
         "positions": visible,
         "groups": _wallet_groups(db, visible, wallet_id),
-        "totals": _totals(all_pos, _initial_for(db, wallet_id), _temp_total(db)),
+        "totals": _with_change(db, _totals(all_pos, _initial_for(db, wallet_id),
+                                          _temp_total(db),
+                                          alert_settings(db)["health_factor"]), wallet_id),
         "show_closed": show_closed, "alerts": alerts,
         "status": get_status(), "chains": CHAINS,
     })
@@ -266,7 +300,9 @@ def partial_summary(request: Request, wallet: str | None = None, closed: str = "
     return templates.TemplateResponse(request, "partials/body.html", {
         "positions": visible,
         "groups": _wallet_groups(db, visible, wallet_id),
-        "totals": _totals(all_pos, _initial_for(db, wallet_id), _temp_total(db)),
+        "totals": _with_change(db, _totals(all_pos, _initial_for(db, wallet_id),
+                                          _temp_total(db),
+                                          alert_settings(db)["health_factor"]), wallet_id),
         "alerts": alerts,
         "wallet_id": wallet_id, "show_closed": show_closed, "status": get_status(),
     })
@@ -327,6 +363,24 @@ def chart(days: int = Query(30, ge=1, le=3650), wallet: str | None = None,
     q = (q.where(Snapshot.wallet_id == wallet_id) if wallet_id
          else q.where(Snapshot.wallet_id.is_(None)))
     rows = db.scalars(q.order_by(Snapshot.ts)).all()
+    # Текущая стоимость — из ЖИВЫХ позиций, как в плитке, а не из последнего снапшота:
+    # снапшоту до 15 минут, и в углу графика оказалась бы цифра, отличная от плитки на
+    # соседнем экране. Разница выглядела бы ошибкой, хотя оба значения «правильные».
+    # «За 24 ч» при этом не зависит от выбранного масштаба: сутки — это сутки.
+    net_q = select(func.coalesce(func.sum(Position.net_usd), 0.0)).where(
+        Position.is_open.is_(True))
+    if wallet_id:
+        net_q = net_q.where(Position.wallet_id == wallet_id)
+    open_count = db.scalar(select(func.count()).select_from(Position).where(
+        Position.is_open.is_(True),
+        *( [Position.wallet_id == wallet_id] if wallet_id else [] )))
+    net_now = float(db.scalar(net_q) or 0.0) if open_count else None
+    change = change_pct = span_h = None
+    if net_now is not None:
+        # период — выбранный на графике, а не всегда сутки: подпись строится по
+        # фактической длине, поэтому «за 30д» на трёхдневной истории не появится
+        change, change_pct, span_h = net_change(db, net_now, hours=days * 24,
+                                                wallet_id=wallet_id, allow_shorter=True)
     return JSONResponse({
         "labels": [r.ts.isoformat() for r in rows],
         "net": [r.net_usd for r in rows],
@@ -334,6 +388,10 @@ def chart(days: int = Query(30, ge=1, le=3650), wallet: str | None = None,
         "debt": [r.debt_usd for r in rows],
         "fees": [r.fees_unclaimed_usd for r in rows],
         "points": len(rows),
+        "net_now": net_now,
+        "change": change,
+        "change_pct": change_pct,
+        "change_hours": round(span_h, 2) if span_h is not None else None,
     })
 
 
@@ -477,23 +535,13 @@ def fees_page(request: Request, wallet: str = "",
 @router.get("/wallets", response_class=HTMLResponse)
 def wallets_page(request: Request, user: User = Depends(require_user),
                  db: Session = Depends(get_session)):
+    """Только кошельки. Состояние синхронизации и доставки переехало в Настройки:
+    к кошелькам оно не относится, а искали его именно там."""
     wallets = list(db.scalars(select(Wallet).order_by(Wallet.id)).all())
     counts = {w.id: db.scalar(select(func.count(Position.id))
                               .where(Position.wallet_id == w.id)) or 0 for w in wallets}
-    # только наличие настроек: дёргать getMe на каждый рендер страницы нельзя,
-    # это сетевой запрос с секундными таймаутами
-    notify_info = {
-        "configured": config.telegram_configured(),
-        "has_token": bool(config.TELEGRAM_BOT_TOKEN),
-        "has_chat": bool(config.TELEGRAM_CHAT_ID),
-        "enabled": config.NOTIFY_ENABLED,
-        "sent": db.scalar(select(func.count(Alert.id)).where(Alert.notify_state == "sent")) or 0,
-        "failed": db.scalar(select(func.count(Alert.id)).where(Alert.notify_state == "failed")) or 0,
-        "last": db.scalar(select(Alert).where(Alert.notify_state == "sent")
-                          .order_by(Alert.notified_at.desc()).limit(1)),
-    }
     return templates.TemplateResponse(request, "wallets.html", {
-        "user": user, "wallets": wallets, "counts": counts, "notify": notify_info,
+        "user": user, "wallets": wallets, "counts": counts,
         "status": get_status(), "config": config,
     })
 
@@ -531,17 +579,10 @@ def wallets_delete(wid: int, user: User = Depends(require_user),
 
 
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, saved: str = "0", error: str = "", edit: str = "",
+def settings_page(request: Request, saved: str = "0", error: str = "",
                   user: User = Depends(require_user), db: Session = Depends(get_session)):
-    """Настройки. edit=ID переводит форму временных сумм в режим правки — тем же
-    приёмом, что на странице партий: поля одни и те же, вторая форма не нужна."""
-    all_pos, _ = _load(db, None, True)
-    prefs = get_prefs(db)
-    temps = list(db.scalars(select(TempDeposit).order_by(TempDeposit.created_at)).all())
-    tid = _qs_int(edit)
-    editing_temp = db.get(TempDeposit, tid) if tid else None
-    # для карточки сетей: что выбрано и сколько позиций уже есть в каждой сети —
-    # выключать сеть с активными позициями почти всегда ошибка, и это должно быть видно
+    """Настройки приложения. Только настройки: журналы своих денег переехали в /money,
+    диагностика — карточкой ниже на этой же странице."""
     picked = set(enabled_chain_keys(db))
     per_chain = {ch: (total, open_) for ch, total, open_ in db.execute(
         select(Position.chain, func.count(),
@@ -551,11 +592,31 @@ def settings_page(request: Request, saved: str = "0", error: str = "", edit: str
                    "total": per_chain.get(key, (0, 0))[0],
                    "open": per_chain.get(key, (0, 0))[1]}
                   for key, ch in CHAINS.items()]
-
     return templates.TemplateResponse(request, "settings.html", {
+        "user": user, "status": get_status(), "config": config,
+        "chain_rows": chain_rows, "notify": _notify_stats(db),
+        "conf": alert_settings(db),
+        "saved": _qs_flag(saved), "error": error,
+    })
+
+
+@router.get("/money", response_class=HTMLResponse)
+def money_page(request: Request, saved: str = "0", error: str = "", edit: str = "",
+               user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Свои деньги: исходное вложение и временные доливки.
+
+    Журнал, а не настройка — поэтому живёт рядом с партиями и покупками BTC, а не в
+    Настройках, где лежал раньше.
+    """
+    all_pos, _ = _load(db, None, True)
+    prefs = get_prefs(db)
+    temps = list(db.scalars(select(TempDeposit).order_by(TempDeposit.created_at)).all())
+    tid = _qs_int(edit)
+    editing_temp = db.get(TempDeposit, tid) if tid else None
+    return templates.TemplateResponse(request, "money.html", {
         "user": user, "prefs": prefs, "status": get_status(), "config": config,
-        "chain_rows": chain_rows,
-        "totals": _totals(all_pos, prefs.get("initial_deposit_usd"), _temp_total(db)),
+        "totals": _totals(all_pos, prefs.get("initial_deposit_usd"), _temp_total(db),
+                          alert_settings(db)["health_factor"]),
         "temps": temps, "temp_total": _temp_total(db),
         "editing_temp": editing_temp,
         "temp_prefill": {"amount": _form_num(editing_temp.amount_usd) if editing_temp else "",
@@ -564,30 +625,30 @@ def settings_page(request: Request, saved: str = "0", error: str = "", edit: str
     })
 
 
-@router.post("/settings")
-def settings_save(initial_deposit: str = Form(""), initial_note: str = Form(""),
+@router.post("/money/initial")
+def money_initial(initial_deposit: str = Form(""), initial_note: str = Form(""),
                   user: User = Depends(require_user), db: Session = Depends(get_session)):
     try:
         amount = parse_money(initial_deposit)
     except ValueError as e:
-        return RedirectResponse(f"/settings?error={e}", status_code=303)
+        return RedirectResponse(f"/money?error={e}", status_code=303)
     save_prefs(db, initial_deposit_usd=amount, initial_note=initial_note.strip()[:200])
-    return RedirectResponse("/settings?saved=1", status_code=303)
+    return RedirectResponse("/money?saved=1", status_code=303)
 
 
-@router.post("/settings/temp/add")
+@router.post("/money/temp/add")
 def temp_add(amount: str = Form(""), note: str = Form(""),
              user: User = Depends(require_user), db: Session = Depends(get_session)):
     """Временно заведённая сумма — например, долив залога ради health factor."""
     try:
         value = parse_money(amount)
     except ValueError as e:
-        return RedirectResponse(f"/settings?error={e}", status_code=303)
+        return RedirectResponse(f"/money?error={e}", status_code=303)
     if not value:
-        return RedirectResponse("/settings?error=Укажите сумму", status_code=303)
+        return RedirectResponse("/money?error=Укажите сумму", status_code=303)
     db.add(TempDeposit(amount_usd=value, note=note.strip()[:200]))
     db.commit()
-    return RedirectResponse("/settings?saved=1#temp", status_code=303)
+    return RedirectResponse("/money?saved=1#temp", status_code=303)
 
 
 @router.post("/settings/chains")
@@ -607,7 +668,7 @@ def settings_chains(chains: list[str] = Form(default=[]),
     return RedirectResponse("/settings?saved=1#chains", status_code=303)
 
 
-@router.post("/settings/temp/{tid}/edit")
+@router.post("/money/temp/{tid}/edit")
 def temp_edit(tid: int, amount: str = Form(""), note: str = Form(""),
               user: User = Depends(require_user), db: Session = Depends(get_session)):
     """Правка временной суммы.
@@ -618,27 +679,27 @@ def temp_edit(tid: int, amount: str = Form(""), note: str = Form(""),
     """
     row = db.get(TempDeposit, tid)
     if row is None:
-        return RedirectResponse("/settings?error=Запись не найдена", status_code=303)
+        return RedirectResponse("/money?error=Запись не найдена", status_code=303)
     try:
         value = parse_money(amount)
     except ValueError as e:
-        return RedirectResponse(f"/settings?edit={tid}&error={e}#temp", status_code=303)
+        return RedirectResponse(f"/money?edit={tid}&error={e}#temp", status_code=303)
     if not value:
-        return RedirectResponse(f"/settings?edit={tid}&error=Укажите сумму#temp",
+        return RedirectResponse(f"/money?edit={tid}&error=Укажите сумму#temp",
                                 status_code=303)
     row.amount_usd, row.note = value, note.strip()[:200]
     db.commit()
-    return RedirectResponse("/settings?saved=1#temp", status_code=303)
+    return RedirectResponse("/money?saved=1#temp", status_code=303)
 
 
-@router.post("/settings/temp/{tid}/delete")
+@router.post("/money/temp/{tid}/delete")
 def temp_delete(tid: int, user: User = Depends(require_user),
                 db: Session = Depends(get_session)):
     row = db.get(TempDeposit, tid)
     if row is not None:
         db.delete(row)
         db.commit()
-    return RedirectResponse("/settings?saved=1#temp", status_code=303)
+    return RedirectResponse("/money?saved=1#temp", status_code=303)
 
 
 # --------------------------------------------------------------------------------------
@@ -872,6 +933,95 @@ def btc_delete(bid: int, user: User = Depends(require_user),
         db.delete(row)
         db.commit()
     return RedirectResponse("/btc", status_code=303)
+
+
+# --------------------------------------------------------------------------------------
+# Оповещения о цене
+# --------------------------------------------------------------------------------------
+
+@router.get("/alerts", response_class=HTMLResponse)
+def alerts_page(request: Request, error: str = "", saved: str = "0",
+                user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Оповещения о пересечении цены. Проверяются в минутном цикле, см. core/pricealerts."""
+    rows = list(db.scalars(select(PriceAlert).order_by(desc(PriceAlert.id))).all())
+    prices = {r["symbol"]: r["price"] for r in market_rates(db) if r.get("kind") == "crypto"}
+    return templates.TemplateResponse(request, "alerts.html", {
+        "user": user, "status": get_status(), "rows": rows, "error": error,
+        "symbols": SYMBOLS, "directions": DIRECTIONS, "prices": prices,
+        "telegram_ok": config.telegram_configured(),
+        # пороги по позициям — здесь же: это тоже оповещения, просто не про цену
+        "conf": alert_settings(db), "saved": _qs_flag(saved),
+    })
+
+
+@router.post("/alerts/thresholds")
+def alerts_thresholds(health: str = Form(""), cooldown: str = Form(""),
+                      out_of_range: str = Form(""), user: User = Depends(require_user),
+                      db: Session = Depends(get_session)):
+    """Пороги оповещений о позициях. Действуют со следующего цикла, без перезапуска."""
+    try:
+        hf = parse_money(health)
+        cd = parse_money(cooldown)
+    except ValueError as e:
+        return RedirectResponse(f"/alerts?error={e}#thresholds", status_code=303)
+    if not hf or not (1.0 <= hf <= 10.0):
+        return RedirectResponse(
+            "/alerts?error=Порог health factor задаётся между 1.0 и 10.0#thresholds",
+            status_code=303)
+    if cd is None or not (0 <= cd <= 24 * 60):
+        return RedirectResponse("/alerts?error=Пауза задаётся в минутах, до 1440#thresholds",
+                                status_code=303)
+    save_prefs(db, alert_health_factor=hf, alert_cooldown=int(cd * 60),
+               alert_out_of_range=_qs_flag(out_of_range))
+    return RedirectResponse("/alerts?saved=1#thresholds", status_code=303)
+
+
+@router.post("/alerts/add")
+def alerts_add(symbol: str = Form(""), price: str = Form(""), direction: str = Form(""),
+               note: str = Form(""), user: User = Depends(require_user),
+               db: Session = Depends(get_session)):
+    if symbol not in SYMBOLS or direction not in DIRECTIONS:
+        return RedirectResponse("/alerts?error=Выберите монету и направление", status_code=303)
+    try:
+        target = parse_money(price)
+    except ValueError as e:
+        return RedirectResponse(f"/alerts?error={e}", status_code=303)
+    if not target:
+        return RedirectResponse("/alerts?error=Укажите цену", status_code=303)
+
+    # last_price ставим сразу: иначе первая проверка ушла бы на «заряжание», и переход,
+    # случившийся в ту же минуту, потерялся бы
+    now = {r["symbol"]: r["price"] for r in market_rates(db) if r.get("kind") == "crypto"}
+    db.add(PriceAlert(symbol=symbol, price=target, direction=direction,
+                      note=note.strip()[:200], last_price=now.get(symbol)))
+    db.commit()
+    return RedirectResponse("/alerts", status_code=303)
+
+
+@router.post("/alerts/{aid}/arm")
+def alerts_arm(aid: int, user: User = Depends(require_user),
+               db: Session = Depends(get_session)):
+    """Взвести заново после срабатывания или выключить."""
+    row = db.get(PriceAlert, aid)
+    if row is not None:
+        row.enabled = not row.enabled
+        if row.enabled:
+            # сбрасываем отметку срабатывания и заряжаем текущей ценой
+            row.triggered_at = row.triggered_price = None
+            now = {r["symbol"]: r["price"] for r in market_rates(db) if r.get("kind") == "crypto"}
+            row.last_price = now.get(row.symbol)
+        db.commit()
+    return RedirectResponse("/alerts", status_code=303)
+
+
+@router.post("/alerts/{aid}/delete")
+def alerts_delete(aid: int, user: User = Depends(require_user),
+                  db: Session = Depends(get_session)):
+    row = db.get(PriceAlert, aid)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return RedirectResponse("/alerts", status_code=303)
 
 
 @router.get("/calc", response_class=HTMLResponse)

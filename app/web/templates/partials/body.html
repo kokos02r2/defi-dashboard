@@ -26,7 +26,7 @@
     </div>
     <div class="sub">
       {{ '+' if totals.vs.delta > 0 }}{{ totals.vs.delta | usd }}
-      · сейчас {{ totals.vs.current | usd_short }} из {{ totals.vs.initial | usd_short }}
+      · сейчас {{ totals.vs.current | usd }} из {{ totals.vs.initial | usd }}
     </div>
     {% if totals.vs.temp %}
     <div class="sub">результат самих вложений, доливки вычтены</div>
@@ -44,16 +44,31 @@
 <div class="tiles">
   <div class="tile">
     <div class="label">Чистая стоимость</div>
-    <div class="value">{{ totals.net | usd_short }}</div>
+    {# Здесь суммы полностью, без сокращения до «k»: это главные цифры портфеля, и
+       разница между $42.2k и $42 220.97 — это восемьсот долларов, которые в
+       сокращении не видны вовсе. В остальных плитках сокращение уместно: там важен
+       порядок величины, а не центы. #}
+    <div class="value">{{ totals.net | usd }}</div>
+    {# Изменение за сутки — из тех же снапшотов, что рисуют график, поэтому плитка и
+       картинка не могут разойтись. Пока истории меньше суток, строки нет вовсе:
+       ноль означал бы «не изменилось», а мы просто не знаем. #}
+    {% if totals.change_24h is defined and totals.change_24h is not none %}
+    <div class="sub delta-24h {{ 'up' if totals.change_24h > 0 else ('down' if totals.change_24h < 0 else '') }}">
+      {{ '▲' if totals.change_24h > 0 else ('▼' if totals.change_24h < 0 else '·') }}
+      {{ totals.change_24h_pct | abs | pct(2) }}
+      ({{ '+' if totals.change_24h > 0 else '−' }}{{ totals.change_24h | abs | usd }})
+      <span class="meta">за 24 ч</span>
+    </div>
+    {% endif %}
     <div class="sub">
-      активы {{ totals.value | usd_short }}{% if totals.debt %} · долг {{ totals.debt | usd_short }}{% endif %}
+      активы {{ totals.value | usd }}{% if totals.debt %} · долг {{ totals.debt | usd }}{% endif %}
     </div>
     {% if totals.vs.temp %}
     {# Доливки физически лежат ВНУТРИ этой суммы: они заведены в позиции, поэтому
        входят и в активы, и в чистую стоимость. Показываем здесь, чтобы было видно,
        какая часть цифры — свои временные деньги, а не заработанное. #}
     <div class="sub" title="Временно заведённые суммы из Настроек — они внутри этой стоимости">
-      включая доливки {{ totals.vs.temp | usd_short }}
+      включая доливки {{ totals.vs.temp | usd }}
     </div>
     {% endif %}
   </div>
@@ -64,9 +79,9 @@
   <a class="tile tile-link" href="/fees{% if wallet_id %}?wallet={{ wallet_id }}{% endif %}"
      title="Открыть историю собранных комиссий">
     <div class="label">Несобранные комиссии <span class="go">→</span></div>
-    <div class="value">{{ totals.fees_unclaimed | usd_short }}</div>
+    <div class="value">{{ totals.fees_unclaimed | usd }}</div>
     <div class="sub">
-      {% if totals.fees_claimed %}заклеймлено за всё время {{ totals.fees_claimed | usd_short }}{% else %}по активным позициям{% endif %}
+      {% if totals.fees_claimed %}заклеймлено за всё время {{ totals.fees_claimed | usd }}{% else %}по активным позициям{% endif %}
     </div>
   </a>
 

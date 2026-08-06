@@ -17,17 +17,38 @@
 <body>
 {% if user is defined and user %}
 <header class="top">
-  <span class="brand">DeFi Dashboard</span>
+  {# Два пространства в одном приложении: крипта и личные финансы. Переключатель стоит
+     на месте названия и служит им же — иначе в шапке рядом оказались бы и название, и
+     переключатель, говорящие одно и то же. У каждого пространства своё меню: «Кошельки»
+     и «Категории расходов» в одном списке путали бы, а не помогали. #}
+  {% set space = space | default('defi', true) %}
+  <nav class="spaces" aria-label="Пространства">
+    <a href="/" class="{{ 'on' if space != 'fin' }}">DeFi</a>
+    <a href="/fin" class="{{ 'on' if space == 'fin' }}">Личные</a>
+  </nav>
   {# Разделы свёрнуты в одну кнопку: семь ссылок в строку разрастались и выдавливали
      курсы на вторую строку. На кнопке — название текущего раздела, иначе непонятно,
      где ты находишься. <details> сворачивается сам, без библиотек и без JS. #}
   {% set cur = active | default('', true) %}
-  {% set PAGES = [('/', 'dash', 'Портфель'), ('/fees', 'fees', 'Комиссии'),
-                  ('/lots', 'lots', 'Партии'), ('/btc', 'btc', 'BTC'),
-                  ('/calc', 'calc', 'Калькулятор'), ('/wallets', 'wallets', 'Кошельки'),
-                  ('/settings', 'settings', 'Настройки')] %}
-  {% set TITLES = {'dash': 'Портфель', 'fees': 'Комиссии', 'lots': 'Партии', 'btc': 'BTC',
-                   'calc': 'Калькулятор', 'wallets': 'Кошельки', 'settings': 'Настройки'} %}
+  {# Порядок по назначению: сначала смотреть, потом вести руками, потом настраивать,
+     инструмент последним. Журналы (партии, BTC, свои деньги) — один пункт с закладками:
+     всё это записывается руками, потому что блокчейн этого не знает. #}
+  {% set PAGES = [('/', 'dash', 'Портфель'), ('/fees', 'fees', 'Доходность'),
+                  ('/lots', 'journal', 'Журналы'),
+                  ('/alerts', 'alerts', 'Оповещения'),
+                  ('/wallets', 'wallets', 'Кошельки'), ('/settings', 'settings', 'Настройки'),
+                  ('/calc', 'calc', 'Калькулятор')] %}
+  {% set TITLES = {'dash': 'Портфель', 'fees': 'Доходность', 'journal': 'Журналы',
+                   'alerts': 'Оповещения', 'wallets': 'Кошельки',
+                   'settings': 'Настройки', 'calc': 'Калькулятор'} %}
+  {% if space == 'fin' %}
+  {% set PAGES = [('/fin', 'fin_over', 'Обзор'), ('/fin/tx', 'fin_tx', 'Операции'),
+                  ('/fin/import', 'fin_imp', 'Загрузка выписки'),
+                  ('/fin/categories', 'fin_cat', 'Категории'),
+                  ('/fin/accounts', 'fin_acc', 'Счета')] %}
+  {% set TITLES = {'fin_over': 'Обзор', 'fin_tx': 'Операции', 'fin_imp': 'Загрузка выписки',
+                   'fin_cat': 'Категории', 'fin_acc': 'Счета'} %}
+  {% endif %}
   <details class="menu" id="nav-menu">
     <summary title="Разделы">{{ TITLES.get(cur) or 'Разделы' }}</summary>
     <nav>
@@ -42,6 +63,10 @@
         hx-swap="innerHTML" aria-label="Курсы ETH и BTC"></span>
 
   <span class="spacer"></span>
+  {# Состояние опроса нод и кнопки обновления — только в крипто-пространстве. В личных
+     финансах обновлять нечего: данные вводятся руками и загружаются файлом, никакой
+     фоновой синхронизации за ними нет, и «Обновить» вводило бы в заблуждение. #}
+  {% if space != 'fin' %}
   {# Плашка статуса, как и тикер, тянет себя сама — и поэтому больше не зависит
      от того, передала ли страница переменную status: живёт на всех страницах,
      где есть шапка, а не только на дашборде. #}
@@ -57,6 +82,7 @@
       Полная синхронизация
     </button>
   </form>
+  {% endif %}
   <button class="btn ghost" onclick="toggleTheme()" title="Светлая/тёмная тема" aria-label="Сменить тему">◐</button>
   <a class="btn ghost" href="/logout">Выйти</a>
 </header>
@@ -67,6 +93,26 @@
 </div>
 
 <script>
+  // Время — в часовом поясе браузера. Сервер живёт в UTC и отдаёт метку в ISO с
+  // зоной; перевести её может только браузер, потому что только он знает, откуда
+  // на страницу смотрят. В разметке остаётся UTC как запасной вариант — если
+  // скрипт не сработает, время будет неверным по поясу, но не пропадёт.
+  function localTimes(root) {
+    (root || document).querySelectorAll("time.localtime[datetime], time.localdt[datetime]")
+      .forEach(function (el) {
+        var d = new Date(el.getAttribute("datetime"));
+        if (isNaN(d.getTime())) return;
+        el.textContent = el.classList.contains("localdt")
+          ? d.toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", year: "numeric",
+                                       hour: "2-digit", minute: "2-digit"})
+          : d.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+        el.title = d.toLocaleString("ru-RU");
+      });
+  }
+  // после каждой подмены htmx: плашка статуса обновляется сама каждые 15 секунд
+  document.body.addEventListener("htmx:afterSettle", function (e) { localTimes(e.target); });
+  localTimes();
+
   // <details> не закрывается сам ни щелчком мимо, ни по Esc, а открытая панель
   // висит над страницей и мешает читать то, ради чего её и открыли.
   document.addEventListener("click", function (e) {

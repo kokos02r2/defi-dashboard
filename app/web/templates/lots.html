@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Партии — DeFi Dashboard{% endblock %}
-{% set active = 'lots' %}
+{% set active = 'journal' %}
+{% set tab = 'lots' %}
 
 {% block content %}
+{% include "partials/journal_tabs.html" %}
 <h1 class="page">Партии</h1>
 <div class="page-sub">
   По какой средней цене на самом деле набран актив. В блокчейне этой цифры нет —
@@ -20,7 +22,7 @@
     <div class="label">{{ s.symbol }} · средняя цена</div>
     <div class="value">${{ s.avg_price | usd_price }}</div>
     <div class="sub">
-      {{ '%.6f' % s.amount }} {{ s.symbol }} на {{ s.cost | usd_short }}
+      {{ '%.6f' % s.amount }} {{ s.symbol }} на {{ s.cost | usd }}
       {% if s.lots > 1 %}· {{ s.lots }} партии{% endif %}
     </div>
     {% if s.price_now %}

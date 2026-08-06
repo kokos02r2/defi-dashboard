@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer,
                         String, Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -350,6 +350,38 @@ class TokenLot(Base):
         return (self.amount or 0) * (self.avg_price_usd or 0)
 
 
+class PriceAlert(Base):
+    """Оповещение о пересечении цены: «сообщи, когда ETH перейдёт $2000 вниз».
+
+    Пересечение, а не просто «цена ниже порога». Разница существенная: условие «ниже»
+    выполняется постоянно, пока цена внизу, и слало бы сообщение каждую минуту. Чтобы
+    поймать именно переход, нужна предыдущая цена — она хранится в last_price, и на
+    первой проверке оповещение только «заряжается», ничего не отправляя: направление
+    движения из одной точки неизвестно.
+
+    Срабатывает один раз и выключается. Цена у порога ходит туда-сюда, и повторные
+    сообщения превратились бы в поток — как это было с выходом из диапазона, пока там
+    не появилась пауза. Взвести заново можно кнопкой.
+    """
+    __tablename__ = "price_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16))          # ETH / BTC
+    price: Mapped[float] = mapped_column(Float)              # порог в долларах
+    direction: Mapped[str] = mapped_column(String(4))        # up / down
+    note: Mapped[str] = mapped_column(String(200), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    triggered_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    @property
+    def label(self) -> str:
+        return f"{self.symbol} {'выше' if self.direction == 'up' else 'ниже'} ${self.price:,.2f}".replace(",", " ")
+
+
 class BtcBuy(Base):
     """Покупка BTC со заклеймленных комиссий — просто журнал, отдельно от всего.
 
@@ -375,6 +407,194 @@ class BtcBuy(Base):
     @property
     def cost_usd(self) -> float:
         return (self.amount_btc or 0) * (self.price_usd or 0)
+
+
+# --------------------------------------------------------------------------------------
+# Личные финансы
+#
+# Второе пространство дашборда: доходы и расходы вне блокчейна. С крипто-частью оно
+# не пересекается НИЧЕМ, кроме входа и вёрстки — ни одна таблица ниже не читается в
+# jobs/refresh.py и не влияет на чистую стоимость портфеля. Это сознательно: деньги
+# на карте и деньги в позиции Uniswap — разные сущности, и сложить их в один итог
+# можно только осмысленным отдельным решением, а не побочным эффектом.
+# --------------------------------------------------------------------------------------
+
+class FxRate(Base):
+    """Официальный курс ЦБ РФ: сколько рублей за единицу валюты в конкретный день.
+
+    Рубль как опорная величина выбран не из-за особой роли, а потому что ЦБ публикует
+    всё именно в такой форме. Курс любой пары получается делением двух строк, взятых
+    на один день, — так считается и официальный кросс-курс.
+
+    Курс за прошедший день неизменен навсегда, поэтому кэш здесь бессрочный: запрос к
+    ЦБ делается один раз на дату. За выходные и праздники курса не публикуют — тогда
+    под запрошенной датой лежит курс ближайшего предыдущего рабочего дня, и это тоже
+    навсегда: прошлые выходные новыми данными не обрастут.
+    """
+    __tablename__ = "fx_rates"
+
+    day: Mapped[datetime] = mapped_column(Date, primary_key=True)
+    code: Mapped[str] = mapped_column(String(3), primary_key=True)
+    rub: Mapped[float] = mapped_column(Float)
+    # дата, на которую ЦБ реально опубликовал этот курс: для субботы здесь стоит пятница
+    as_of: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FinAccount(Base):
+    """Счёт: карта конкретного банка, наличные, счёт в другой валюте.
+
+    Остатки не ведутся сознательно. Остаток требует, чтобы в базу попала каждая до
+    последней операция и начальное сальдо, иначе он тихо расходится с реальностью и
+    начинает врать — а выписки заливаются раз в месяц и не всегда полностью. Здесь
+    счёт нужен для другого: сказать, из какой выписки пришла операция и в какой она
+    валюте, и дать разбивку расходов по банкам.
+    """
+    __tablename__ = "fin_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    note: Mapped[str] = mapped_column(String(200), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # Сопоставление колонок последней удачной загрузки для этого счёта: у каждого банка
+    # своя шапка, но она не меняется от выписки к выписке — второй раз указывать не надо.
+    import_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FinCategory(Base):
+    """Категория расхода или дохода. Плоский список, без вложенности.
+
+    Без групп и без лимитов: спрошено прямо — нужно понимать, на что ушли деньги,
+    а не следить за исполнением бюджета. Вложенность и планы добавили бы экраны,
+    которые никто не открывает.
+    """
+    __tablename__ = "fin_categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    kind: Mapped[str] = mapped_column(String(8), index=True)   # expense / income
+    color: Mapped[str] = mapped_column(String(16), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("name", "kind", name="uq_fin_category_name_kind"),)
+
+
+class FinTx(Base):
+    """Одна операция: расход или доход.
+
+    Сумма всегда положительная, а знак живёт в kind. Иначе одно и то же приходится
+    помнить в двух местах, и рано или поздно в базу попадает доход с минусом.
+
+    Пересчёт в базовую валюту записан в amount_base прямо при сохранении, вместе с
+    применённым курсом. Считать его на лету при каждом открытии отчёта означало бы,
+    что цифры за прошлый год меняются от сегодняшнего курса — история должна стоять
+    на месте. Курс берётся на дату операции, а не на сегодня.
+    """
+    __tablename__ = "fin_tx"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("fin_accounts.id", ondelete="CASCADE"), index=True)
+    day: Mapped[datetime] = mapped_column(Date, index=True)
+    kind: Mapped[str] = mapped_column(String(8), index=True)    # expense / income
+    amount: Mapped[float] = mapped_column(Float, default=0.0)   # в валюте операции
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    amount_base: Mapped[float | None] = mapped_column(Float, nullable=True)
+    base_code: Mapped[str] = mapped_column(String(3), default="")
+    rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fin_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    # Не учитывать в итогах, но и не терять. Ровно для переводов между своими счетами:
+    # они приходят в выписке наравне с покупками, но расходом не являются — учтёшь их,
+    # и расходы вырастут на сумму каждого перевода.
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    source: Mapped[str] = mapped_column(String(8), default="manual")   # manual / import
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fin_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Отпечаток операции — защита от повторной загрузки. Выписки перекрываются: скачал
+    # за июль, потом за июнь–июль, и половина строк приходит второй раз.
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    account: Mapped["FinAccount"] = relationship(lazy="joined")
+    category: Mapped["FinCategory | None"] = relationship(lazy="joined")
+
+    __table_args__ = (Index("ix_fin_tx_day_kind", "day", "kind"),)
+
+    @property
+    def signed_base(self) -> float:
+        """Сумма в базовой валюте со знаком: расход — минус. Для графиков и сальдо."""
+        v = self.amount_base or 0.0
+        return -v if self.kind == "expense" else v
+
+    @property
+    def rule_hint(self) -> str:
+        """Заготовка образца для правила: самое длинное слово из описания.
+
+        В выписке описание выглядит как «MERCADONA 4021 BARCELONA 12/07» — правилом
+        должно стать «mercadona», а не вся строка с номером терминала и датой, иначе
+        оно не подойдёт ни к одной следующей операции. Цифры отбрасываются по той же
+        причине. Человек видит подставленное слово и при необходимости правит.
+        """
+        import re
+        words = [w for w in re.split(r"[^\w]+", (self.note or "").lower())
+                 if len(w) >= 4 and not w.isdigit()]
+        return max(words, key=len) if words else ""
+
+
+class FinImportBatch(Base):
+    """Одна загрузка файла: сколько строк пришло, сколько добавилось, сколько повторов.
+
+    Партия нужна, чтобы загрузку можно было отменить целиком. Залил не тот файл или не
+    тот счёт — одна кнопка возвращает базу к прежнему состоянию. Без этого разбирать
+    двести чужих строк пришлось бы руками.
+    """
+    __tablename__ = "fin_batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fin_accounts.id", ondelete="SET NULL"), nullable=True)
+    filename: Mapped[str] = mapped_column(String(200), default="")
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    added: Mapped[int] = mapped_column(Integer, default=0)
+    duplicates: Mapped[int] = mapped_column(Integer, default=0)
+    ignored: Mapped[int] = mapped_column(Integer, default=0)   # отсеяно правилами
+    failed: Mapped[int] = mapped_column(Integer, default=0)    # не разобрана строка
+    mapping: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    account: Mapped["FinAccount | None"] = relationship(lazy="joined")
+
+
+class FinRule(Base):
+    """Правило автокатегоризации: подстрока в описании — значит эта категория.
+
+    Главная вещь во всей затее. Триста строк из банковской выписки вручную не разложит
+    никто, и через месяц учёт заброшен. Одно правило «mercadona → Продукты» разбирает
+    все будущие выписки само.
+
+    Правило со skip не категоризует, а отсеивает строку при загрузке — этим убираются
+    переводы между своими счетами, которых мы вообще не хотим видеть.
+    """
+    __tablename__ = "fin_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pattern: Mapped[str] = mapped_column(String(200))          # подстрока, регистр не важен
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fin_categories.id", ondelete="CASCADE"), nullable=True)
+    skip: Mapped[bool] = mapped_column(Boolean, default=False)
+    kind: Mapped[str] = mapped_column(String(8), default="")    # пусто — к любым операциям
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    category: Mapped["FinCategory | None"] = relationship(lazy="joined")
 
 
 class KV(Base):

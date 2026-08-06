@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Комиссии — DeFi Dashboard{% endblock %}
+{% block title %}Доходность — DeFi Dashboard{% endblock %}
 {% set active = 'fees' %}
 
 {% block content %}
-<h1 class="page">Комиссии</h1>
+<h1 class="page">Доходность</h1>
 <div class="page-sub">
-  Сколько комиссий уже собрано и когда. Каждый сбор посчитан по цене токенов
-  <b>на момент сбора</b>, а не по сегодняшней: в мае собранный эфир стоил не столько,
-  сколько в декабре, и пересчёт по текущей цене гонял бы давно полученный доход
-  вверх-вниз вместе с рынком.
+  Что приносят позиции и что стоит плечо. Комиссии Uniswap — приход, проценты по займу
+  во Fluid — расход; вместе они отвечают на вопрос, зарабатывает конструкция или проедает.
+  Каждый сбор посчитан по цене токенов <b>на момент сбора</b>, а не по сегодняшней:
+  пересчёт по текущей цене гонял бы давно полученный доход вверх-вниз вместе с рынком.
 </div>
 
 {# Один ряд фильтров над всем, что они задают — как на портфеле #}
@@ -45,7 +45,7 @@
 <div class="tiles">
   <div class="tile">
     <div class="label">Собрано за период</div>
-    <div class="value">{{ rep.total | usd_short }}</div>
+    <div class="value">{{ rep.total | usd }}</div>
     <div class="sub">
       {% if rep.events %}
         {{ rep.events }} {{ rep.events | plural('сбор', 'сбора', 'сборов') }}
@@ -56,7 +56,7 @@
 
   <div class="tile">
     <div class="label">В среднем за месяц</div>
-    <div class="value">{{ rep.per_month | usd_short }}</div>
+    <div class="value">{{ rep.per_month | usd }}</div>
     <div class="sub">
       {% if rep.buckets %}по {{ rep.buckets | length }} месяцам, включая пустые{% else %}—{% endif %}
     </div>
@@ -64,13 +64,13 @@
 
   <div class="tile">
     <div class="label">Лучший месяц</div>
-    <div class="value sm">{{ rep.best.usd | usd_short if rep.best else '—' }}</div>
+    <div class="value sm">{{ rep.best.usd | usd if rep.best else '—' }}</div>
     <div class="sub">{{ rep.best.label if rep.best else 'нет данных' }}</div>
   </div>
 
   <div class="tile">
     <div class="label">Несобранные сейчас</div>
-    <div class="value sm">{{ unclaimed | usd_short }}</div>
+    <div class="value sm">{{ unclaimed | usd }}</div>
     <div class="sub">лежат в пулах, ещё не забраны</div>
   </div>
 
@@ -83,7 +83,7 @@
     <div class="value sm">{{ apr | pct(2) if apr is defined and apr is not none else 'н/д' }}</div>
     <div class="sub">
       {% if apr is defined and apr is not none %}
-        от вложенных {{ base | usd_short }} · за {{ rep.span_days | round | int }} дн.
+        от вложенных {{ base | usd }} · за {{ rep.span_days | round | int }} дн.
       {% else %}
         {{ apr_note }}{% if not base and not wallet_id %} — <a href="/settings">задать</a>{% endif %}
       {% endif %}
@@ -94,7 +94,7 @@
   <div class="tile">
     <div class="label">Комиссии к вложению</div>
     <div class="value sm">{{ apr_share | pct(1) }}</div>
-    <div class="sub">собрано за период от вложенных {{ base | usd_short }}</div>
+    <div class="sub">собрано за период от вложенных {{ base | usd }}</div>
   </div>
   {% endif %}
 </div>
@@ -219,10 +219,10 @@
       <div class="tile">
         <div class="label">В год</div>
         <div class="value sm {{ 'down' if carry.net_year < 0 else 'up' }}">
-          {{ '−' if carry.net_year < 0 else '+' }}{{ carry.net_year | abs | usd_short }}
+          {{ '−' if carry.net_year < 0 else '+' }}{{ carry.net_year | abs | usd }}
         </div>
         <div class="sub">
-          {{ carry.net_on_equity | pct(2) }} на капитал {{ carry.equity | usd_short }}
+          {{ carry.net_on_equity | pct(2) }} на капитал {{ carry.equity | usd }}
         </div>
       </div>
       {% if rep.per_month %}

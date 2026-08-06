@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Оповещения — DeFi Dashboard{% endblock %}
+{% set active = 'alerts' %}
+
+{% block content %}
+<h1 class="page">Оповещения о цене</h1>
+<div class="page-sub">
+  Сообщение в Telegram, когда ETH или BTC <b>пересечёт</b> заданную цену в заданном
+  направлении. Именно пересечёт: условие «ниже порога» выполняется всё время, пока цена
+  внизу, и слало бы сообщение каждую минуту.
+</div>
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px"><span class="ic">✓</span><span>Сохранено</span></div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if not telegram_ok %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    Telegram не настроен, отправлять сообщения некуда. Оповещения можно создать, но они
+    сработают только после настройки бота — см. <code>TELEGRAM_BOT_TOKEN</code> в
+    <code>.env</code> и <code>manage.py notify-test</code>.
+  </span>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Новое оповещение</h2>
+  <div class="body">
+    <form method="post" action="/alerts/add"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Монета</span>
+        <select name="symbol" style="min-width:110px">
+          {% for s in symbols %}
+          <option value="{{ s }}">{{ s }}{% if prices.get(s) %} · ${{ prices[s] | usd_price }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Направление</span>
+        <select name="direction" style="min-width:150px">
+          <option value="up">пересечёт вверх ▲</option>
+          <option value="down">пересечёт вниз ▼</option>
+        </select>
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Цена, $</span>
+        <input type="text" name="price" style="width:150px" required placeholder="2000">
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Заметка</span>
+        <input type="text" name="note" style="width:100%"
+               placeholder="докупить, если дойдёт">
+      </label>
+      <button class="btn primary" type="submit">＋ Создать</button>
+    </form>
+    <div class="note">
+      Проверка идёт раз в минуту, вместе с обновлением курсов для тикера — своих запросов
+      к бирже не делается. Оповещение срабатывает <b>один раз</b> и выключается: цена у
+      порога ходит туда-сюда, и повторные сообщения превратились бы в поток. Взвести
+      заново — кнопкой в таблице.
+    </div>
+  </div>
+</div>
+
+{# Пороги по позициям — на этой же странице: это тоже оповещения, просто не про цену,
+   а про здоровье сейфов и выход из диапазона. Раньше задавались только в .env, то есть
+   файлом и перезапуском, хотя крутят их как раз по ходу дела, глядя на свои позиции. #}
+<div class="card" style="margin-bottom:16px" id="thresholds">
+  <h2>Оповещения о позициях</h2>
+  <div class="body">
+    {# Флажок — компактный, в одну строку: высокая плашка от выбора сетей ломала
+       выравнивание ряда, где рядом стоят поля ввода. Пояснение к нему ниже, в тексте. #}
+    <form method="post" action="/alerts/thresholds"
+          style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Порог health factor</span>
+        <input type="text" name="health" style="width:130px" required
+               value="{{ conf.health_factor }}" placeholder="1.15">
+      </label>
+      <label>
+        <span style="display:block;font-size:12.5px;color:var(--ink-2);margin-bottom:5px">Пауза против дребезга, мин</span>
+        <input type="text" name="cooldown" style="width:150px" required
+               value="{{ (conf.cooldown / 60) | round | int }}" placeholder="30">
+      </label>
+      <label class="check-inline">
+        <input type="checkbox" name="out_of_range" value="1" {{ 'checked' if conf.out_of_range }}>
+        <span>Сообщать о выходе из диапазона</span>
+      </label>
+      <button class="btn primary" type="submit">Сохранить</button>
+    </form>
+    <div class="note">
+      Health factor ниже порога — предупреждение о риске ликвидации сейфа Fluid.
+      О выходе из диапазона приходит и сообщение о возврате обратно. Пауза против
+      дребезга нужна потому, что цена у границы диапазона ходит туда-сюда: без неё выход
+      и возврат слали бы поток сообщений. Ликвидация сообщается всегда, порогом её не
+      отключить. Настройки действуют со следующего цикла, без перезапуска.
+    </div>
+  </div>
+</div>
+
+{% if rows %}
+<div class="card">
+  <h2>Оповещения о цене</h2>
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Условие</th><th>Заметка</th><th class="num">Сейчас</th>
+          <th class="num">До порога</th><th>Состояние</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in rows %}
+        <tr>
+          <td>
+            <div class="name">
+              {{ a.symbol }} {{ '▲ вверх' if a.direction == 'up' else '▼ вниз' }}
+              через ${{ a.price | usd_price }}
+            </div>
+            <div class="meta">создано {{ a.created_at | ts_short }}</div>
+          </td>
+          <td>{{ a.note or '—' }}</td>
+          <td class="num">
+            {% if prices.get(a.symbol) %}${{ prices[a.symbol] | usd_price }}{% else %}—{% endif %}
+          </td>
+          <td class="num">
+            {# расстояние до порога: сразу видно, какое оповещение может сработать вот-вот #}
+            {% set now = prices.get(a.symbol) %}
+            {% if now %}
+              {% set diff = (a.price / now - 1) * 100 %}
+              <span class="{{ 'status warn' if diff | abs < 3 else '' }}">{{ diff | pct(1, true) }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if a.triggered_at %}
+              <span class="status ok">✓ сработало</span>
+              <div class="meta">
+                {{ a.triggered_at | ts_short }} по ${{ a.triggered_price | usd_price }}
+              </div>
+            {% elif a.enabled %}
+              <span class="status ok">● следим</span>
+              {% if a.last_price is none %}<div class="meta">заряжается</div>{% endif %}
+            {% else %}
+              <span class="status off">● выключено</span>
+            {% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <form method="post" action="/alerts/{{ a.id }}/arm" style="display:inline">
+              <button class="btn ghost" type="submit">
+                {{ 'Выключить' if a.enabled else ('Взвести снова' if a.triggered_at else 'Включить') }}
+              </button>
+            </form>
+            <form method="post" action="/alerts/{{ a.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить оповещение {{ a.symbol }} через ${{ a.price | usd_price }}?')">
+              <button class="btn ghost danger" type="submit" title="Удалить">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="body" style="padding-top:0">
+    <div class="note">
+      Пересечение определяется по двум последним замерам цены, поэтому только что
+      созданное оповещение сначала «заряжается» — по одной точке направление движения
+      неизвестно. И если цена перескочит порог и вернётся обратно между двумя проверками,
+      переход останется незамеченным: при минутном шаге это возможно лишь на очень
+      быстром выбросе.
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    Оповещений пока нет.<br>
+    Создайте первое формой выше — например, ETH вниз через $1 800.
+  </div>
+</div>
+{% endif %}
+{% endblock %}

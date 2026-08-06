@@ -15,21 +15,21 @@
 <div class="tiles">
   <div class="tile">
     <div class="label">{{ 'Чистая стоимость' if pos.debt_usd else 'Стоимость сейчас' }}</div>
-    <div class="value">{{ pos.net_usd | usd_short }}</div>
-    {% if pos.debt_usd %}<div class="sub">залог {{ pos.value_usd | usd_short }} · долг {{ pos.debt_usd | usd_short }}</div>{% endif %}
+    <div class="value">{{ pos.net_usd | usd }}</div>
+    {% if pos.debt_usd %}<div class="sub">залог {{ pos.value_usd | usd }} · долг {{ pos.debt_usd | usd }}</div>{% endif %}
   </div>
   {% if pos.fees_unclaimed_usd is not none %}
   <div class="tile">
     <div class="label">Не собрано комиссий</div>
-    <div class="value">{{ pos.fees_unclaimed_usd | usd_short }}</div>
-    {% if pos.fees_claimed_usd %}<div class="sub">заклеймлено {{ pos.fees_claimed_usd | usd_short }}</div>{% endif %}
+    <div class="value">{{ pos.fees_unclaimed_usd | usd }}</div>
+    {% if pos.fees_claimed_usd %}<div class="sub">заклеймлено {{ pos.fees_claimed_usd | usd }}</div>{% endif %}
   </div>
   {% endif %}
   {% if pos.pnl_usd is not none %}
   <div class="tile">
     <div class="label">PnL с комиссиями</div>
     <div class="value sm">{{ m.delta(pos.pnl_usd, pos.pnl_pct) }}</div>
-    <div class="sub">вложено {{ pos.deposited_usd | usd_short }}</div>
+    <div class="sub">вложено {{ pos.deposited_usd | usd }}</div>
   </div>
   {% endif %}
   {% if pos.apr is not none %}

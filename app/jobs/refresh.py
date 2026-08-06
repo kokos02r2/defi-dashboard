@@ -21,15 +21,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import config
-from app.core import notify
+from app.core import notify, pricealerts
 from app.core.chains import CHAINS, Chain, enabled_chains
 from app.core.inrange import portfolio as inrange_portfolio
 from app.core.market import market_rates
+from app.core.portfolio import net_change
 from app.core.prices import PriceService
 from app.core.rpc import Rpc
 from app.core.tokens import TokenService
 from app.db.base import session_scope
-from app.db.prefs import enabled_chain_keys
+from app.db.prefs import alert_settings, enabled_chain_keys
 from app.db.models import (Alert, BlockTime, KV, Position, PositionEvent, PositionSnapshot,
                            Snapshot, Wallet, utcnow)
 from app.providers.base import Ctx, KnownPosition, Provider, RawPosition
@@ -188,7 +189,7 @@ RANGE_KINDS = ("out_of_range", "back_in_range")
 
 def _recent_range_alert(db: Session, position_id: int) -> Alert | None:
     """Последний алерт про диапазон по этой позиции внутри паузы против дребезга."""
-    since = utcnow() - timedelta(seconds=config.ALERT_COOLDOWN)
+    since = utcnow() - timedelta(seconds=alert_settings(db)["cooldown"])
     row = db.scalar(select(Alert).where(Alert.position_id == position_id,
                                         Alert.kind.in_(RANGE_KINDS))
                     .order_by(Alert.ts.desc()).limit(1))
@@ -230,7 +231,8 @@ def _check_alerts(db: Session, pos: Position, prev_in_range, prev_health, create
     # промолчать про неё из-за этой же проверки было бы худшим из возможных исходов.
     active = bool(pos.is_open)
 
-    if (active and config.ALERT_OUT_OF_RANGE
+    conf = alert_settings(db)
+    if (active and conf["out_of_range"]
             and prev_in_range is not None and pos.in_range is not None):
         if prev_in_range and not pos.in_range:
             _add_alert(db, pos, "out_of_range", "warning",
@@ -240,7 +242,7 @@ def _check_alerts(db: Session, pos: Position, prev_in_range, prev_health, create
             _add_alert(db, pos, "back_in_range", "info",
                        f"{pos.title} ({pos.chain}) вернулась в диапазон", cooldown=True)
 
-    thr = config.ALERT_HEALTH_FACTOR
+    thr = conf["health_factor"]
     if active and pos.health_factor is not None:
         crossed_down = (prev_health is None or prev_health >= thr) and pos.health_factor < thr
         if crossed_down:
@@ -339,7 +341,9 @@ def refresh(mode: str = "live", wallet_id: int | None = None) -> dict:
         with session_scope() as db:
             # курсы ETH/BTC для тикера греем здесь же: тогда открытая страница
             # берёт их из базы мгновенно, не дожидаясь похода в DefiLlama
-            market_rates(db)
+            rates = market_rates(db)
+            # оповещения о цене проверяем на тех же ценах — своих запросов не делаем
+            stats["price_alerts"] = pricealerts.check(db, rates)
 
             wallets = db.scalars(
                 select(Wallet).where(Wallet.enabled.is_(True))
@@ -486,14 +490,9 @@ def digest_payload(db: Session) -> dict:
     net = sum(p.net_usd or 0 for p in positions)
     now = utcnow()
 
-    # ближайший снапшот НЕ новее суток; если история младше — сравнивать не с чем
-    prev = db.scalar(select(Snapshot).where(Snapshot.wallet_id.is_(None),
-                                           Snapshot.ts <= now - timedelta(hours=24))
-                     .order_by(Snapshot.ts.desc()).limit(1))
-    delta = delta_pct = None
-    if prev is not None and prev.net_usd:
-        delta = net - prev.net_usd
-        delta_pct = delta / prev.net_usd * 100
+    # тот же расчёт, что в плитке «Чистая стоимость» на дашборде: одна функция,
+    # чтобы сообщение и экран не разошлись в цифрах
+    delta, delta_pct, _ = net_change(db, net, hours=24)
 
     collected_24h = db.scalar(
         select(func.coalesce(func.sum(PositionEvent.fee_usd_at_time), 0.0))
@@ -514,7 +513,9 @@ def digest_payload(db: Session) -> dict:
         "out_of_range": sum(1 for p in positions if p.in_range is False),
         "worst_hf": worst.health_factor if worst else None,
         "worst_hf_title": f"{worst.title} ({worst.chain})" if worst else None,
-        "hf_below_threshold": bool(worst and worst.health_factor < config.ALERT_HEALTH_FACTOR),
+        # порог берём действующий, а не из .env: он настраивается в Оповещениях
+        "hf_below_threshold": bool(worst and worst.health_factor
+                                   < alert_settings(db)["health_factor"]),
         # долю времени показываем только когда наблюдений хватает, иначе она врёт
         "inrange_pct": ir.pct if ir.reliable else None,
     }
