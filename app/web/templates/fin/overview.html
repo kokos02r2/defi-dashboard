@@ -47,6 +47,13 @@
       <a href="/fin/money">раздел «Деньги сейчас»</a>
     </div>
     {% endif %}
+    {% if owed.rows %}
+    <div style="margin-top:8px">
+      Должны мне: <b>{{ owed.to_me | money(base) }}</b>
+      {%- if owed.i_owe %}, должен я: <b>{{ owed.i_owe | money(base) }}</b>{% endif %} —
+      <a href="/fin/debts">раздел «Долги»</a>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% else %}
@@ -104,6 +111,22 @@
         <span class="{{ 'up' if d > 0 else ('down' if d < 0 else '') }}">
           {{ '▲' if d > 0 else ('▼' if d < 0 else '·') }} {{ d | abs | money(base) }}
         </span> с {{ money_prev.day | dmy }}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if owed.rows %}
+  {# Долги — состояние на сегодня, а не итог месяца: цифра не меняется от выбора
+     периода, поэтому в подписи стоит «сейчас», чтобы её не приняли за июльскую. #}
+  <div class="tile">
+    <div class="label">Должны мне</div>
+    <div class="value {{ 'up' if owed.to_me }}">{{ owed.to_me | money(base) }}</div>
+    <div class="sub">
+      <a href="/fin/debts">сейчас</a>
+      {%- if owed.i_owe %} · я должен {{ owed.i_owe | money(base) }}{% endif %}
+      {%- if owed.overdue %} ·
+        <span class="down">просрочено: {{ owed.overdue | length }}</span>
       {% endif %}
     </div>
   </div>

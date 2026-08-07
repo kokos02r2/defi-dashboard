@@ -122,6 +122,8 @@ def overview(request: Request, m: str | None = None, user: User = Depends(requir
     # Записанные руками остатки — к выбранному месяцу не привязаны: показываем
     # последнее, что известно, иначе плитка пропадала бы при листании месяцев
     money = fin.snapshots(db, limit=2)
+    # Долги тоже вне месяца: это состояние на сегодня, а не итог периода
+    owed = fin.debts(db)
 
     return templates.TemplateResponse(request, "fin/overview.html", _ctx(
         db, user=user, month=key, months_have=fin.available_months(db),
@@ -131,6 +133,7 @@ def overview(request: Request, m: str | None = None, user: User = Depends(requir
         top=fin.top_expenses(db, start, end, limit=10),
         recurring=fin.recurring(db, months=6)[:12],
         money=money[0] if money else None, money_prev=money[1] if len(money) > 1 else None,
+        owed=owed,
         series=[{"month": r.month, "income": round(r.income, 2),
                  "expense": round(r.expense, 2), "net": round(r.net, 2)} for r in months],
     ))
