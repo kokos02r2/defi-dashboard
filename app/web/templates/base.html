@@ -44,10 +44,12 @@
   {% if space == 'fin' %}
   {% set PAGES = [('/fin', 'fin_over', 'Обзор'), ('/fin/tx', 'fin_tx', 'Операции'),
                   ('/fin/money', 'fin_money', 'Деньги сейчас'),
+                  ('/fin/debts', 'fin_debt', 'Долги'),
                   ('/fin/import', 'fin_imp', 'Загрузка выписки'),
                   ('/fin/categories', 'fin_cat', 'Категории'),
                   ('/fin/accounts', 'fin_acc', 'Счета')] %}
   {% set TITLES = {'fin_over': 'Обзор', 'fin_tx': 'Операции', 'fin_money': 'Деньги сейчас',
+                   'fin_debt': 'Долги',
                    'fin_imp': 'Загрузка выписки',
                    'fin_cat': 'Категории', 'fin_acc': 'Счета'} %}
   {% endif %}

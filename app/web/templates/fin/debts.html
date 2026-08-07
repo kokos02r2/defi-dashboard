@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}Долги — Личные финансы{% endblock %}
+{% set active = 'fin_debt' %}
+
+{% macro debt_table(rows, title, empty) %}
+<div class="card" style="margin-bottom:16px">
+  <h2>{{ title }}</h2>
+  {% if rows %}
+  <div class="table-scroll">
+    <table class="positions">
+      <thead>
+        <tr>
+          <th>Кто</th><th class="num">Сколько</th><th>С какого числа</th>
+          <th>Обещали вернуть</th><th>За что</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for x in rows %}
+        <tr class="{{ 'editing' if editing and editing.id == x.id }}">
+          <td><div class="name">{{ x.person }}</div></td>
+          <td class="num">
+            {% if d.base[x.id] is not none %}
+              {{ d.base[x.id] | money(base) }}
+            {% else %}
+              <span class="status warn">нет курса</span>
+            {% endif %}
+            {% if x.currency != base %}
+            <div class="meta">{{ x.amount | money(x.currency) }}</div>
+            {% endif %}
+          </td>
+          <td class="meta">{{ x.day | dmy }}</td>
+          <td class="meta">
+            {% if x.due %}
+              {{ x.due | dmy }}
+              {%- if x.due < today_date %} <span class="status bad">просрочено</span>{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="meta">{{ x.note or '—' }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn ghost" href="/fin/debts?edit={{ x.id }}#debt-form" title="Изменить">✎</a>
+            <form method="post" action="/fin/debts/{{ x.id }}/settle" style="display:inline">
+              <button class="btn ghost" type="submit"
+                      title="Рассчитались — убрать из итогов, но оставить в списке">✓</button>
+            </form>
+            <form method="post" action="/fin/debts/{{ x.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Удалить долг {{ x.person }} на {{ x.amount | money(x.currency) }}? Если вы просто рассчитались, лучше нажать ✓ — запись останется в истории.')">
+              <button class="btn ghost danger" type="submit" title="Удалить запись">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">{{ empty }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% block content %}
+<h1 class="page">Долги</h1>
+<div class="page-sub">
+  Кто и сколько должен на сегодня — и сколько должен я. В сумме долга лежит
+  <b>остаток</b>: вернули часть — поправьте число. Пересчёт в {{ base }} по курсу
+  <b>на сегодня</b>, а не на дату долга: вопрос «сколько мне должны» — про сейчас.
+</div>
+
+{% if saved %}
+<div class="alert info" style="margin-bottom:16px"><span class="ic">✓</span><span>Сохранено</span></div>
+{% endif %}
+{% if error %}
+<div class="alert danger" style="margin-bottom:16px"><span class="ic">✕</span><span>{{ error }}</span></div>
+{% endif %}
+
+{% if d.overdue %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    Срок прошёл у {{ d.overdue | length }}
+    {{ d.overdue | length | plural('долга', 'долгов', 'долгов') }}:
+    {{ d.overdue | map(attribute='person') | join(', ') }}.
+  </span>
+</div>
+{% endif %}
+
+{% if d.no_rate %}
+<div class="alert warning" style="margin-bottom:16px;align-items:flex-start">
+  <span class="ic">▲</span>
+  <span>
+    {{ d.no_rate }} {{ d.no_rate | plural('долг', 'долга', 'долгов') }} не
+    {{ d.no_rate | plural('учтён', 'учтены', 'учтены') }} в итогах: не удалось получить
+    курс ЦБ на сегодня. Цифры ниже занижены — откройте страницу позже.
+  </span>
+</div>
+{% endif %}
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Должны мне</div>
+    <div class="value {{ 'up' if d.to_me }}">{{ d.to_me | money(base) }}</div>
+    <div class="sub">
+      {% set n = d.side('to_me') | selectattr('settled_at', 'none') | list | length %}
+      {{ n }} {{ n | plural('человек', 'человека', 'человек') }} с открытым долгом
+    </div>
+  </div>
+  <div class="tile">
+    <div class="label">Должен я</div>
+    <div class="value {{ 'down' if d.i_owe }}">{{ d.i_owe | money(base) }}</div>
+    <div class="sub">
+      {% set n = d.side('i_owe') | selectattr('settled_at', 'none') | list | length %}
+      {{ n }} {{ n | plural('запись', 'записи', 'записей') }}
+    </div>
+  </div>
+  <div class="tile">
+    <div class="label">Сальдо</div>
+    <div class="value {{ 'up' if d.net > 0 else ('down' if d.net < 0 else '') }}">
+      {{ '−' if d.net < 0 }}{{ d.net | abs | money(base) }}
+    </div>
+    <div class="sub">
+      {% if d.net > 0 %}столько придёт, если все рассчитаются
+      {% elif d.net < 0 %}столько придётся отдать
+      {% else %}в расчёте{% endif %}
+    </div>
+  </div>
+</div>
+
+{# Одна форма на два режима: edit=ID в адресе решает, куда она отправится #}
+<div class="card" id="debt-form" style="margin-bottom:16px">
+  <h2>{{ 'Изменить долг' if editing else 'Записать долг' }}</h2>
+  <div class="body">
+    <form method="post"
+          action="{{ ('/fin/debts/%d/edit' % editing.id) if editing else '/fin/debts/add' }}"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Кто кому</span>
+        <select name="side" style="min-width:150px">
+          <option value="to_me" {{ 'selected' if not editing or editing.side == 'to_me' }}>
+            Должны мне
+          </option>
+          <option value="i_owe" {{ 'selected' if editing and editing.side == 'i_owe' }}>
+            Должен я
+          </option>
+        </select>
+      </label>
+      <label style="min-width:170px">
+        <span class="fl">Имя</span>
+        <input type="text" name="person" style="width:100%" required
+               value="{{ editing.person if editing else '' }}" placeholder="Иван">
+      </label>
+      <label>
+        <span class="fl">Сколько сейчас</span>
+        <input type="text" name="amount" style="width:130px" required inputmode="decimal"
+               value="{{ '%.2f' % editing.amount if editing else '' }}" placeholder="500,00">
+      </label>
+      <label>
+        <span class="fl">Валюта</span>
+        <select name="currency" style="min-width:95px">
+          {% for c in currencies %}
+            <option value="{{ c }}"
+                    {{ 'selected' if (editing and editing.currency == c) or (not editing and c == base) }}>
+              {{ c }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="fl">С какого числа</span>
+        <input type="date" name="day" style="width:150px"
+               value="{{ editing.day.isoformat() if editing else today }}">
+      </label>
+      <label>
+        <span class="fl">Обещали вернуть</span>
+        <input type="date" name="due" style="width:150px"
+               value="{{ editing.due.isoformat() if editing and editing.due else '' }}">
+      </label>
+      <label style="flex:1;min-width:200px">
+        <span class="fl">За что</span>
+        <input type="text" name="note" style="width:100%"
+               value="{{ editing.note if editing else '' }}"
+               placeholder="одолжил на ремонт машины">
+      </label>
+      <button class="btn primary" type="submit">{{ 'Сохранить' if editing else '＋ Записать' }}</button>
+      {% if editing %}<a class="btn ghost" href="/fin/debts">Отмена</a>{% endif %}
+    </form>
+    <div class="note">
+      «Обещали вернуть» можно не заполнять — тогда долг просто висит без срока. Если
+      срок стоит и прошёл, долг помечается «просрочено», и наверху появляется список
+      таких: смысл раздела в том, чтобы про них не забывать.
+    </div>
+    <div class="note">
+      Вернули часть — поправьте сумму: в ней остаток, а не изначально выданное.
+      Рассчитались полностью — кнопка ✓: долг уйдёт из итогов, но останется в истории.
+      Удаление ✕ — для записей, заведённых по ошибке.
+    </div>
+  </div>
+</div>
+
+{{ debt_table(d.side('to_me') | selectattr('settled_at', 'none') | list,
+              'Должны мне', 'Никто ничего не должен.') }}
+{{ debt_table(d.side('i_owe') | selectattr('settled_at', 'none') | list,
+              'Должен я', 'Вы никому ничего не должны.') }}
+
+{% if settled %}
+<div class="card">
+  <details {{ 'open' if show_closed }}>
+    <summary class="card-summary">Рассчитались · {{ settled | length }}</summary>
+    <div class="table-scroll">
+      <table class="positions">
+        <thead>
+          <tr><th>Кто</th><th>Сторона</th><th class="num">Сколько было</th>
+              <th>С какого числа</th><th>За что</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for x in settled %}
+          <tr class="dimmed">
+            <td><div class="name">{{ x.person }}</div></td>
+            <td class="meta">{{ side_names[x.side] }}</td>
+            <td class="num">{{ x.amount | money(x.currency) }}</td>
+            <td class="meta">{{ x.day | dmy }}</td>
+            <td class="meta">{{ x.note or '—' }}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <form method="post" action="/fin/debts/{{ x.id }}/settle" style="display:inline">
+                <button class="btn ghost" type="submit"
+                        title="Вернуть в открытые — закрыли по ошибке">↩</button>
+              </form>
+              <form method="post" action="/fin/debts/{{ x.id }}/delete" style="display:inline"
+                    onsubmit="return confirm('Удалить запись о долге {{ x.person }} насовсем?')">
+                <button class="btn ghost danger" type="submit" title="Удалить запись">✕</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="body">
+      <div class="note" style="margin-top:0">
+        Закрытые долги в итоги не входят и в суммах наверху не участвуют. Лежат здесь,
+        чтобы через год можно было вспомнить, кто и когда возвращал.
+      </div>
+    </div>
+  </details>
+</div>
+{% endif %}
+{% endblock %}

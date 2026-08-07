@@ -629,6 +629,37 @@ class FinBalance(Base):
     __table_args__ = (UniqueConstraint("account_id", "day", name="uq_fin_balance_day"),)
 
 
+class FinDebt(Base):
+    """Долг: кто и сколько должен на сегодня — или сколько должен я.
+
+    Одна запись — один долг, и в ней лежит остаток, а не начальная сумма. Вернули
+    половину — сумма правится. Отдельной таблицы платежей нет сознательно: вопрос,
+    на который отвечает раздел, звучит «сколько мне должны сейчас», и для него
+    история частичных возвратов лишняя, а вести её пришлось бы руками.
+
+    Пересчёт в валюту отчётов, в отличие от операций и остатков, НЕ записывается:
+    долг — это не история, а текущее состояние, и считать его надо по сегодняшнему
+    курсу. Заодно снимается риск, что после смены валюты отчётов в одной сумме
+    сложатся рубли с евро.
+    """
+    __tablename__ = "fin_debts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # to_me — должны мне, i_owe — должен я. Обе стороны в одной таблице: вопрос
+    # «сколько я всего кому должен» без них не имеет ответа.
+    side: Mapped[str] = mapped_column(String(8), default="to_me", index=True)
+    person: Mapped[str] = mapped_column(String(80), default="")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)     # остаток долга
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    day: Mapped[datetime] = mapped_column(Date, index=True)       # когда возник
+    due: Mapped[datetime | None] = mapped_column(Date, nullable=True)   # обещали вернуть
+    note: Mapped[str] = mapped_column(String(300), default="")
+    # Закрытый долг не удаляется: «мне вернули» — это то, что хочется видеть потом,
+    # а не то, что надо стирать.
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class KV(Base):
     """Служебное состояние: время последних прогонов, статус задач."""
     __tablename__ = "kv"

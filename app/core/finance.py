@@ -21,7 +21,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import fx
-from app.db.models import (FinAccount, FinBalance, FinCategory, FinRule, FinTx)
+from app.db.models import (FinAccount, FinBalance, FinCategory, FinDebt, FinRule,
+                           FinTx)
 from app.db.prefs import base_currency, get_prefs, save_prefs
 
 log = logging.getLogger(__name__)
@@ -611,3 +612,65 @@ def snapshots(db: Session, limit: int = 24) -> list[Snapshot]:
         out.append(s)
     out.reverse()
     return out[:limit]
+
+
+# --------------------------------------------------------------------------------------
+# Долги
+# --------------------------------------------------------------------------------------
+
+SIDES = ("to_me", "i_owe")
+SIDE_NAMES = {"to_me": "должны мне", "i_owe": "должен я"}
+
+
+@dataclass
+class Debts:
+    """Долги с пересчётом в валюту отчётов и итогами по обе стороны."""
+    rows: list = field(default_factory=list)
+    base: dict[int, float | None] = field(default_factory=dict)
+    to_me: float = 0.0
+    i_owe: float = 0.0
+    no_rate: int = 0
+
+    @property
+    def net(self) -> float:
+        """Сальдо: сколько останется, если все рассчитаются."""
+        return round(self.to_me - self.i_owe, 2)
+
+    def side(self, side: str) -> list:
+        return [d for d in self.rows if d.side == side]
+
+    @property
+    def overdue(self) -> list:
+        today = date.today()
+        return [d for d in self.rows
+                if d.settled_at is None and d.due is not None and d.due < today]
+
+
+def debts(db: Session, include_settled: bool = False) -> Debts:
+    """Долги и итоги. Открытые сначала, внутри — по сроку и дате.
+
+    Пересчёт по курсу на сегодня, а не на дату долга: вопрос «сколько мне должны»
+    про сейчас. Долг, выданный три года назад в рублях, сегодня стоит столько,
+    сколько стоит сегодня, — старый курс тут ответил бы не на тот вопрос.
+    """
+    q = select(FinDebt)
+    if not include_settled:
+        q = q.where(FinDebt.settled_at.is_(None))
+    rows = list(db.scalars(q.order_by(FinDebt.settled_at.is_(None).desc(),
+                                      FinDebt.day.desc(), FinDebt.id.desc())))
+    out = Debts(rows=rows)
+    today = date.today()
+    for d in rows:
+        value, _, _ = convert_for(db, d.amount, d.currency, today)
+        out.base[d.id] = value
+        if d.settled_at is not None:
+            continue          # закрытый долг в итоги не входит
+        if value is None:
+            out.no_rate += 1
+            continue
+        if d.side == "i_owe":
+            out.i_owe += value
+        else:
+            out.to_me += value
+    out.to_me, out.i_owe = round(out.to_me, 2), round(out.i_owe, 2)
+    return out

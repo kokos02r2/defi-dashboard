@@ -29,8 +29,8 @@ from app.core import finimport as imp
 from app.core import fx
 from app.core.fmt import plural
 from app.db.base import get_session
-from app.db.models import (KV, FinAccount, FinBalance, FinCategory, FinImportBatch,
-                           FinRule, FinTx, User, utcnow)
+from app.db.models import (KV, FinAccount, FinBalance, FinCategory, FinDebt,
+                           FinImportBatch, FinRule, FinTx, User, utcnow)
 from app.db.prefs import base_currency, get_prefs, save_prefs
 from app.web.templating import templates
 
@@ -731,6 +731,103 @@ def rules_delete(rid: int, user: User = Depends(require_user),
         db.delete(r)
         db.commit()
     return _redirect("/fin/categories", saved="1")
+
+
+# --------------------------------------------------------------------------------------
+# Долги
+# --------------------------------------------------------------------------------------
+
+def _debt_form(person: str, amount: str, day: str, due: str,
+               ) -> tuple[str, float, date, date | None] | str:
+    """Проверка полей формы долга. Возвращает разобранное или текст ошибки."""
+    who = person.strip()[:80]
+    if not who:
+        return "не указано, кто должен"
+    value = imp.parse_number(amount)
+    if value is None or value == 0:
+        return f"не похоже на сумму: {amount!r}"
+    d = imp.parse_day(day) or date.today()
+    when_due = imp.parse_day(due) if due.strip() else None
+    return who, abs(round(value, 2)), d, when_due
+
+
+@router.get("/debts", response_class=HTMLResponse)
+def debts_page(request: Request, saved: str = "", error: str = "", edit: str = "",
+               closed: str = "", user: User = Depends(require_user),
+               db: Session = Depends(get_session)):
+    """Кто и сколько должен на сегодня — и сколько должен я."""
+    data = fin.debts(db, include_settled=True)
+    editing = db.get(FinDebt, int(edit)) if edit.isdigit() else None
+    return templates.TemplateResponse(request, "fin/debts.html", _ctx(
+        db, user=user, d=data, editing=editing, show_closed=closed == "1",
+        settled=[x for x in data.rows if x.settled_at is not None],
+        today=date.today().isoformat(), today_date=date.today(),
+        currencies=fx.CURRENCIES, side_names=fin.SIDE_NAMES, saved=saved, error=error))
+
+
+@router.post("/debts/add")
+def debts_add(side: str = Form("to_me"), person: str = Form(""), amount: str = Form(""),
+              currency: str = Form(""), day: str = Form(""), due: str = Form(""),
+              note: str = Form(""), user: User = Depends(require_user),
+              db: Session = Depends(get_session)):
+    parsed = _debt_form(person, amount, day, due)
+    if isinstance(parsed, str):
+        return _redirect("/fin/debts", error=parsed)
+    who, value, d, when_due = parsed
+    cur = (currency or base_currency(db)).upper()
+    db.add(FinDebt(side=side if side in fin.SIDES else "to_me", person=who, amount=value,
+                   currency=cur if len(cur) == 3 else "EUR", day=d, due=when_due,
+                   note=note.strip()[:300]))
+    db.commit()
+    return _redirect("/fin/debts", saved="1")
+
+
+@router.post("/debts/{did}/edit")
+def debts_edit(did: int, side: str = Form("to_me"), person: str = Form(""),
+               amount: str = Form(""), currency: str = Form(""), day: str = Form(""),
+               due: str = Form(""), note: str = Form(""),
+               user: User = Depends(require_user), db: Session = Depends(get_session)):
+    """Правка долга. Ею же оформляется частичный возврат: сумма — это остаток."""
+    debt = db.get(FinDebt, did)
+    if debt is None:
+        return _redirect("/fin/debts", error="долг не найден")
+    parsed = _debt_form(person, amount, day, due)
+    if isinstance(parsed, str):
+        return _redirect("/fin/debts", error=parsed, edit=did)
+    who, value, d, when_due = parsed
+    cur = (currency or debt.currency).upper()
+    debt.side = side if side in fin.SIDES else debt.side
+    debt.person, debt.amount, debt.day, debt.due = who, value, d, when_due
+    debt.currency = cur if len(cur) == 3 else debt.currency
+    debt.note = note.strip()[:300]
+    db.commit()
+    return _redirect("/fin/debts", saved="1")
+
+
+@router.post("/debts/{did}/settle")
+def debts_settle(did: int, user: User = Depends(require_user),
+                 db: Session = Depends(get_session)):
+    """Рассчитались — или наоборот, закрыли по ошибке.
+
+    Запись остаётся: «мне вернули» — это то, что хочется видеть потом, а не то, что
+    надо стирать. Закрытый долг в итоги не входит.
+    """
+    debt = db.get(FinDebt, did)
+    if debt is None:
+        return _redirect("/fin/debts", error="долг не найден")
+    debt.settled_at = None if debt.settled_at else utcnow()
+    db.commit()
+    return _redirect("/fin/debts", saved="1", closed="1" if debt.settled_at else "")
+
+
+@router.post("/debts/{did}/delete")
+def debts_delete(did: int, user: User = Depends(require_user),
+                 db: Session = Depends(get_session)):
+    debt = db.get(FinDebt, did)
+    if debt is not None:
+        db.delete(debt)
+        db.commit()
+    return _redirect("/fin/debts", saved="1")
 
 
 # --------------------------------------------------------------------------------------
