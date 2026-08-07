@@ -360,7 +360,8 @@ def header_labels(rows: list[list], m: Mapping) -> list[str]:
 
 
 def parse_rows(rows: list[list], m: Mapping, default_currency: str,
-               limit: int | None = None, expenses_only: bool = True) -> list[Row]:
+               limit: int | None = None, expenses_only: bool = True,
+               not_before: date | None = None) -> list[Row]:
     """Разбирает строки данных по сопоставлению. Ошибочные не выбрасываются, а
     возвращаются с заполненным error: человек должен видеть, что не прочиталось.
 
@@ -369,6 +370,10 @@ def parse_rows(rows: list[list], m: Mapping, default_currency: str,
     это доходом значит завысить и доходы, и сбережения; настоящие доходы заводятся
     руками, их за месяц единицы. Строки прихода не выбрасываются молча — они
     остаются в списке с пометкой, чтобы в предпросмотре было видно, что с ними стало.
+
+    not_before отсекает старые годы. Банк отдаёт выписку за всю историю счёта, поэтому
+    без отсечки удалённые вручную старые операции возвращались бы при следующей же
+    загрузке того же файла.
     """
     out: list[Row] = []
     for i, raw in enumerate(data_rows(rows, m)):
@@ -379,6 +384,9 @@ def parse_rows(rows: list[list], m: Mapping, default_currency: str,
         r = _parse_one(i, raw, m, default_currency)
         if expenses_only and not r.error and not r.skip and r.kind == "income":
             r.skip = "приход — в выписке не учитывается"
+        if not_before is not None and not r.error and not r.skip \
+                and r.day is not None and r.day < not_before:
+            r.skip = f"раньше {not_before.strftime('%d.%m.%Y')} — не загружаем"
         out.append(r)
     return out
 

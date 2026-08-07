@@ -164,4 +164,32 @@
     {% endif %}
   </div>
 </div>
+
+<div class="card">
+  <h2>С какой даты брать операции из выписок</h2>
+  <div class="body">
+    <form method="post" action="/fin/settings/import-from"
+          style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label>
+        <span class="fl">Не загружать раньше</span>
+        <input type="date" name="day" value="{{ import_from }}" style="width:170px">
+      </label>
+      <button class="btn primary" type="submit">Сохранить</button>
+    </form>
+    <div class="note">
+      Банк отдаёт выписку за всю историю счёта — иногда за пять лет. Если старые годы
+      не нужны, поставьте дату: строки раньше неё в базу не попадут, а в предпросмотре
+      будут видны с пометкой. Пустое поле — брать всё, что есть в файле.
+    </div>
+    <div class="note">
+      Без этой отсечки удалённые вручную старые операции возвращались бы при следующей
+      же загрузке того же файла, и чистить их пришлось бы каждый месяц заново.
+      {% if import_from %}
+      Сейчас берутся операции с <b>{{ import_from_day | dmy }}</b>.
+      {% else %}
+      Сейчас берётся всё.
+      {% endif %}
+    </div>
+  </div>
+</div>
 {% endblock %}

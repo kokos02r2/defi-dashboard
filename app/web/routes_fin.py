@@ -31,7 +31,7 @@ from app.core.fmt import plural
 from app.db.base import get_session
 from app.db.models import (KV, FinAccount, FinBalance, FinCategory, FinImportBatch,
                            FinRule, FinTx, User, utcnow)
-from app.db.prefs import base_currency, save_prefs
+from app.db.prefs import base_currency, get_prefs, save_prefs
 from app.web.templating import templates
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,12 @@ def _redirect(path: str, **params) -> RedirectResponse:
     items += [(k, str(v)) for k, v in params.items() if v not in (None, "")]
     return RedirectResponse(f"{path}?{urlencode(items)}" if items else path,
                             status_code=303)
+
+
+def _import_from(db: Session) -> date | None:
+    """С какой даты брать операции из выписок. Пусто — брать все."""
+    raw = str(get_prefs(db).get("fin_import_from") or "").strip()
+    return imp.parse_day(raw) if raw else None
 
 
 def _month(m: str | None, db: Session) -> tuple[date, date, str]:
@@ -493,7 +499,9 @@ def import_map(request: Request, token: str, error: str = "",
     m = imp.Mapping.from_dict(acc.import_map) if acc and acc.import_map else imp.guess(rows)
     if not m.ok:
         m = imp.guess(rows)
-    preview = imp.parse_rows(rows, m, acc.currency if acc else "EUR", limit=imp.PREVIEW_ROWS)
+    since = _import_from(db)
+    preview = imp.parse_rows(rows, m, acc.currency if acc else "EUR",
+                             limit=imp.PREVIEW_ROWS, not_before=since)
     total = len(imp.data_rows(rows, m))
     return templates.TemplateResponse(request, "fin/import_map.html", _ctx(
         db, user=user, token=token, meta=meta, acc=acc, m=m,
@@ -545,7 +553,7 @@ def import_apply(token: str, user: User = Depends(require_user),
         return RedirectResponse(f"/fin/import/{token}?error="
                                 "укажите хотя бы дату и сумму", status_code=303)
 
-    parsed = imp.parse_rows(rows, m, acc.currency)
+    parsed = imp.parse_rows(rows, m, acc.currency, not_before=_import_from(db))
 
     # Курсы за весь период выписки — заранее и одним запросом на валюту. Иначе каждая
     # новая дата тянет отдельный поход в ЦБ, и выписка за несколько лет загружается
@@ -821,9 +829,11 @@ def accounts_page(request: Request, saved: str = "", error: str = "", edit: str 
         .group_by(FinTx.account_id)).all())
     no_rate = int(db.scalar(select(func.count()).select_from(FinTx)
                             .where(FinTx.amount_base.is_(None))) or 0)
+    since = _import_from(db)
     return templates.TemplateResponse(request, "fin/accounts.html", _ctx(
         db, user=user, rows=fin.accounts(db, with_archived=True), counts=counts,
         spent=spent, currencies=fx.CURRENCIES, no_rate=no_rate,
+        import_from=since.isoformat() if since else "", import_from_day=since,
         editing=db.get(FinAccount, int(edit)) if edit.isdigit() else None,
         saved=saved, error=error))
 
@@ -909,6 +919,26 @@ def settings_currency(currency: str = Form("EUR"), user: User = Depends(require_
     if failed:
         msg += f", без курса осталось: {failed}"
     return _redirect("/fin/accounts", saved="1", error="" if not failed else msg)
+
+
+@router.post("/settings/import-from")
+def settings_import_from(day: str = Form(""), user: User = Depends(require_user),
+                         db: Session = Depends(get_session)):
+    """С какой даты брать операции из выписок.
+
+    Банк отдаёт выписку за всю историю счёта. Без отсечки удалённые вручную старые
+    годы возвращались бы при следующей же загрузке того же файла — и человек чистил
+    бы их каждый месяц заново.
+    """
+    raw = (day or "").strip()
+    if not raw:
+        save_prefs(db, fin_import_from="")
+        return _redirect("/fin/accounts", saved="1")
+    d = imp.parse_day(raw)
+    if d is None:
+        return _redirect("/fin/accounts", error=f"не разобрана дата: {raw}")
+    save_prefs(db, fin_import_from=d.isoformat())
+    return _redirect("/fin/accounts", saved="1")
 
 
 @router.post("/settings/recompute")
